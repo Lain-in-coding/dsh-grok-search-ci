@@ -28,7 +28,7 @@ const secrets=new Set();
 const sanitize=value=>redact(String(value),[[temporary,'<TEMPORARY_RUN>'],...runtimes.map(row=>[dirname(row.executable),`<DESKTOP_${row.app.version}>`])],[...secrets]);
 const safe=value=>JSON.parse(sanitize(JSON.stringify(value)));
 const sleep=milliseconds=>new Promise(done=>setTimeout(done,milliseconds));
-const results=[],children=[];
+const results=[],children=[],preparationResults=[];
 let serial=0;
 async function unusedPort() {
   const {createServer}=await import('node:net');const server=createServer();
@@ -277,6 +277,7 @@ async function prepare(runtime,folder,m004BudgetMs=120000){
  writeJson(join(directory,runtime.app.version+'-'+(++serial)+'-prepare.json'),receipt(execution));
  assert.equal(execution.exitCode,0,execution.stderr);assert.equal(execution.timedOut,false);
  const result=JSON.parse(execution.rawStdout);assert.equal(result.dependencyInstall,false);assert.equal(result.originalAsarUnmodified,true);
+ preparationResults.push({version:runtime.app.version,macAppBundleValidation:result.macAppBundleValidation??null});
 }
 async function migrateProfile(folder) {
   const profile=join(folder,'dsh-home/profiles/desktop');
@@ -877,7 +878,7 @@ finally{
  const unchanged=JSON.stringify(beforeHashes)===JSON.stringify(afterHashes);
  const summary={runId,status:fatal?'fail':'pass',counts:{pass:results.filter(row=>row.status==='pass').length,fail:results.filter(row=>row.status==='fail').length},fatal,
   scope:verificationCase==='migration'?'actual-official-Desktop-legacy-record-explicit-migration-no-new-authorization':verificationCase==='product'?'actual-official-Desktop-product-owner-release-and-recovery-with-fixture-and-canonical-session-counters':verificationCase==='m0-04'?'actual-official-Desktop-multi-session-preset-matrix-websocket-reconnect-config-reload-old-session-restart-with-fixture-route-counter':'actual-official-Desktop-development-load-original-ASAR-with-versioned-control-fixture',desktopBehaviorValidated:true,desktopModelEventsValidated:true,desktopUiDomValidated:false,entryWiringValidated:['product','m0-04'].includes(verificationCase),routeVerifierValidated:['product','m0-04'].includes(verificationCase),routeCounterAdapter:verificationCase==='product'?'fixture-and-canonical-session-event':verificationCase==='m0-04'?'fixture-only':null,realHostCounterAdapterValidated:verificationCase==='product'&&!fatal&&targetVersions.every(version=>results.some(row=>row.version===version&&row.scenario==='canonical-counter-real-official-provider-path'&&row.status==='pass')),configReloadNoFallbackValidated:verificationCase==='product'&&!fatal&&targetVersions.every(version=>results.some(row=>row.version===version&&row.scenario==='config-reload-transition-no-official-fallback'&&row.status==='pass')),hostReleaseCompletionReceiptValidated:false,releaseControllerWired:verificationCase==='product',releaseTransactionDesktopValidated:verificationCase==='product',m0_04DesktopValidated:verificationCase==='m0-04'&&!fatal&&results.length>0&&results.every(row=>row.status==='pass'),m0_04MultiSessionValidated:verificationCase==='m0-04'&&!fatal,m0_04PtcPresetValidated:verificationCase==='m0-04'&&!fatal,m0_04OldSessionRestartValidated:verificationCase==='m0-04'&&!fatal,m0_04PresetMatrixValidated:verificationCase==='m0-04'&&!fatal&&results.length>0&&results.every(row=>row.status==='pass'),m0_04OldConnectionReconnectValidated:verificationCase==='m0-04'&&!fatal&&results.length>0&&results.every(row=>row.status==='pass'),m0_04ConfigReloadValidated:verificationCase==='m0-04'&&!fatal&&results.length>0&&results.every(row=>row.status==='pass'),m0_04BudgetMatrixValidated:verificationCase==='m0-04'&&!fatal&&results.filter(row=>row.scenario.startsWith('budget-')).length===6&&results.filter(row=>row.scenario.startsWith('budget-')).every(row=>row.status==='pass'),productIntegrated:false,packagedInstallValidated:false,
-  results:results.map(({version,scenario,status})=>({version,scenario,status})),originalHashes:{before:beforeHashes,after:afterHashes,unchanged},
+  results:results.map(({version,scenario,status})=>({version,scenario,status})),preparationResults,originalHashes:{before:beforeHashes,after:afterHashes,unchanged},
   sourceHashes: sources.map(file=>({file,sha256:sha256(join(project,file))})),exits:children.map(row=>({prefix:row.prefix,exitCode:row.exitCode,signal:row.signal,forced:row.forced??false}))};
  writeJson(join(directory,'summary.json'),safe(summary));console.log(JSON.stringify(safe(summary),null,2));process.exitCode=fatal||!unchanged?1:0;
 }

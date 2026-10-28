@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync, copyFileSync, cpSync, existsSync, lstatSync, realpathSync, constants } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, copyFileSync, cpSync, existsSync, lstatSync, realpathSync, readdirSync, readlinkSync, constants } from 'node:fs';
 import { resolve, dirname, join, relative, isAbsolute, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,56 @@ export function assertDevelopmentFuseCompatibility(fuses) {
   if (!fuses.runAsNode || !fuses.nodeCliInspect || fuses.onlyLoadAppFromAsar || fuses.embeddedAsarIntegrityValidation) {
     throw new Error('Official Electron fuses do not permit this isolated development fixture.');
   }
+}
+
+function isPathInside(root, target) {
+  const path = relative(root, target);
+  return path === '' || (path !== '..' && !path.startsWith('..' + sep) && !isAbsolute(path));
+}
+
+function verifyMacFrameworkCopy(sourceApp, copiedApp, hashFile) {
+  const sourceFrameworks = join(sourceApp, 'Contents', 'Frameworks');
+  const copiedFrameworks = join(copiedApp, 'Contents', 'Frameworks');
+  const sourceRoot = realpathSync(sourceApp);
+  const copiedRoot = realpathSync(copiedApp);
+  let relativeSymlinkCount = 0;
+
+  const inspectDirectory = sourceDirectory => {
+    for (const entry of readdirSync(sourceDirectory, { withFileTypes: true })) {
+      const sourcePath = join(sourceDirectory, entry.name);
+      const copiedPath = join(copiedFrameworks, relative(sourceFrameworks, sourcePath));
+      if (entry.isSymbolicLink()) {
+        const sourceTarget = readlinkSync(sourcePath);
+        if (readlinkSync(copiedPath) !== sourceTarget) {
+          throw new Error('The mac app copy changed a Framework symlink: ' + relative(sourceApp, sourcePath));
+        }
+        if (!isAbsolute(sourceTarget)) relativeSymlinkCount++;
+        const sourceResolved = realpathSync(sourcePath);
+        const copiedResolved = realpathSync(copiedPath);
+        if (isPathInside(sourceRoot, sourceResolved) && !isPathInside(copiedRoot, copiedResolved)) {
+          throw new Error('The mac app copy has a Framework symlink that resolves outside its bundle: ' + relative(sourceApp, sourcePath));
+        }
+      } else if (entry.isDirectory()) {
+        inspectDirectory(sourcePath);
+      }
+    }
+  };
+
+  inspectDirectory(sourceFrameworks);
+
+  const icuCandidates = [
+    'Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/icudtl.dat',
+    'Contents/Frameworks/Electron Framework.framework/Resources/icudtl.dat',
+  ];
+  const icuPath = icuCandidates.find(path => existsSync(join(sourceApp, path)));
+  if (!icuPath || !existsSync(join(copiedApp, icuPath))) {
+    throw new Error('The mac app copy is missing the Electron ICU data resource.');
+  }
+  const sourceIcuHash = hashFile(join(sourceApp, icuPath));
+  const copiedIcuHash = hashFile(join(copiedApp, icuPath));
+  if (copiedIcuHash !== sourceIcuHash) throw new Error('The mac app copy changed the Electron ICU data resource.');
+
+  return { relativeSymlinkCount, icuResource: { path: icuPath, sha256: sourceIcuHash } };
 }
 
 export function resolveNewTemporaryRunRoot(runRoot) {
@@ -74,7 +124,7 @@ export function prepareDesktopFixture(desktopExecutable, runRoot, { versionedCon
   const hashFile = file => createHash('sha256').update(readFileSync(file)).digest('hex');
   const write = (path, value) => writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
   const identities = [];
-  let electronRoot, resources, electron;
+  let electronRoot, resources, electron, macAppBundleValidation = null;
   if (process.platform === 'darwin') {
     if (pluginManagerEntries) {
       electronRoot = dirname(desktop.executable);
@@ -86,10 +136,12 @@ export function prepareDesktopFixture(desktopExecutable, runRoot, { versionedCon
       const packagedArchive = join(resourcesDir, 'app.asar');
       cpSync(appRoot, electronRoot, {
         recursive: true, errorOnExist: true, force: false, preserveTimestamps: true,
+        verbatimSymlinks: true,
         // Like the Windows fixture, use the shipped default_app runtime with the
         // original archive passed as argv. Never delete or rewrite an ASAR or re-sign code.
         filter: path => resolve(path) !== resolve(packagedArchive),
       });
+      macAppBundleValidation = verifyMacFrameworkCopy(appRoot, electronRoot, hashFile);
       resources = join(electronRoot, 'Contents', 'Resources');
       electron = join(electronRoot, 'Contents', 'MacOS', 'DeepSeek Harness');
       const sourceDefault = join(resourcesDir, 'default_app.asar');
@@ -215,10 +267,12 @@ export function prepareDesktopFixture(desktopExecutable, runRoot, { versionedCon
   write(join(root, 'local-control.json'), paths);
   write(join(root, 'preparation.json'), { version: desktop.app.version, binaryCopies: identities,
     appArchiveSha256: hashFile(desktop.archivePath), originalSourceUnchanged: true,
+    macAppBundleValidation,
     startupMode: process.platform === 'darwin' ? (pluginManagerEntries ? 'official-packaged-mac-app' : 'official-mac-app-copy-default-app-development-load-original-asar')
       : 'official-default-app-development-load-original-asar', packagedStartupValidated: false,
     dependenciesInstalled: false, profile: '<temporary-profile>', privateCapabilityExcluded: true, fuses });
   return { version: desktop.app.version, root: '<independent-temporary-run>', binaryCopies: identities.length,
+    macAppBundleValidation,
     originalAsarUnmodified: true, startupMode: process.platform === 'darwin' ? (pluginManagerEntries ? 'packaged-app' : 'mac-development') : 'development', dependencyInstall: false };
 }
 
