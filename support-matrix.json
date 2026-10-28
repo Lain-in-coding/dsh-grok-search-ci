@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "packageVersion": "0.1.0-beta.1",
+  "channel": "公开 Beta（单包；npm next 标签与 GitHub Pre-release 发布同一 tarball）",
+  "platforms": [
+    {
+      "platform": "win32",
+      "arch": "x64",
+      "host": "Desktop"
+    },
+    {
+      "platform": "darwin",
+      "arch": "arm64",
+      "host": "Desktop"
+    },
+    {
+      "platform": "linux",
+      "arch": "x64",
+      "host": "CLI/Web"
+    }
+  ],
+  "bundles": [
+    {
+      "package": "dsh-grok-search",
+      "components": ["grok-search-core", "grok-search-control", "grok-search-settings-ui", "grok-search-route-verifier", "grok-search-recovery"],
+      "note": "D-28：恢复入口并入主包，公开 Beta 只发布这一个插件；早期内部候选的 dsh-grok-search-recovery 已撤下"
+    }
+  ],
+  "targets": [
+    {
+      "platform": "win32-x64",
+      "host": "Desktop",
+      "desktop": "0.2.1-rc.2",
+      "runtime": "0.2.1-rc.2",
+      "verification": "已通过：同一 tarball 的产品安装、产品 Desktop、PluginManager、M0-04 与真实 Grok 门禁（2026-10-27/28）"
+    },
+    {
+      "platform": "win32-x64",
+      "host": "Desktop",
+      "desktop": "0.2.1-rc.3",
+      "runtime": "0.2.1-rc.3",
+      "verification": "已通过：同一 tarball 的产品安装、产品 Desktop、PluginManager、M0-04 与真实 Grok 门禁（2026-10-27/28）"
+    },
+    {
+      "platform": "darwin-arm64",
+      "host": "Desktop",
+      "desktop": "0.2.1-rc.2",
+      "runtime": "0.2.1-rc.2",
+      "verification": "待验证：官方 Apple Silicon 安装包已校验，真机或 ARM runner 门禁尚未运行"
+    },
+    {
+      "platform": "darwin-arm64",
+      "host": "Desktop",
+      "desktop": "0.2.1-rc.3",
+      "runtime": "0.2.1-rc.3",
+      "verification": "待验证：官方 Apple Silicon 安装包已校验，真机或 ARM runner 门禁尚未运行"
+    },
+    {
+      "platform": "linux-x64",
+      "host": "CLI/Web",
+      "runtime": "0.2.1-rc.3",
+      "verification": "已通过：隔离安装、搜索/fetch/chat、设置停止 RPC、重载过渡无官方回退、PluginManager 停用/重启/重新启用/移除、canonical 计数、官方 Grok 0.1.26 Linux x64 程序与进程退出；Web 设置页 DOM 未验证（2026-10-28）"
+    },
+    {
+      "platform": "linux-x64",
+      "host": "CLI/Web",
+      "runtime": "0.2.1-rc.4",
+      "verification": "已通过：隔离安装、搜索/fetch/chat、设置停止 RPC、重载过渡无官方回退、PluginManager 停用/重启/重新启用/移除、canonical 计数、官方 Grok 0.1.26 Linux x64 程序与进程退出；Web 设置页 DOM 未验证（2026-10-28）"
+    }
+  ],
+  "mcpDependency": {
+    "package": "@modelcontextprotocol/client",
+    "version": "2.4.0",
+    "source": "插件自身依赖；不能用宿主内置副本代替安装验收；固定为同时修复 GHSA-6qxp-vccf-f47h 与 GHSA-6prh-2h8m-c8cw 的上游版本"
+  },
+  "implemented": [
+    "原生 grok-search provider",
+    "外部 Grok 的 MCP 查询",
+    "统一预算与有界排队",
+    "错误明确返回",
+    "进程取消与回收",
+    "版本化控制记录、显式迁移与合法启动校正",
+    "单包恢复入口：路由核验、未完成释放的跨进程补完与失败关闭",
+    "Windows x64 Desktop 的单包安装/启用/停用/清理路径；Linux x64 CLI/Web 已验安装与显式停止；macOS Apple Silicon 待验证",
+    "显式释放事务核心（barrier、CAS、路由恢复/验证回调）",
+    "产品 owner/recovery 释放 controller（夹具计数）；单包停用后宿主恢复作者搜索、记录不被改写，重新启用按当前选择重新接管",
+    "Windows Desktop 路由归还与 Linux CLI/Web 显式停止后的作者路由恢复",
+    "canonical Session 原始官方搜索派发事件计数适配（Windows Desktop、Linux CLI/Web 真实官方 provider 路径已验证；macOS 待验证）",
+    "宿主接缝审计（Windows Desktop 与 Linux CLI/Web 已验证；macOS 待验证）",
+    "M0-04 最小单元：两版多 Session/standard-ptc preset/PTC/fetch-chat/旧 Session 重启（夹具）",
+    "M0-04 60000/90000/120000 预算矩阵与可见工具 timeoutMs（夹具）",
+    "M0-04 双版旧连接/WebSocket 重连、配置重载和 standard/ptc/cordis preset 矩阵（夹具计数）",
+    "Beta 包元数据、MIT 许可证与 GitHub Release 安装包白名单"
+  ],
+  "pending": [
+    "macOS Apple Silicon Desktop 真实宿主门禁；Linux CLI/Web 的 Web 设置页浏览器 DOM",
+    "跨资源提交崩溃与完整在途事务",
+    "live HMR（Beta 声明不支持，归 M6）",
+    "官方联网 fetch 验收与费用预期确认",
+    "更广泛的用户反馈与稳定版发布"
+  ],
+  "firstReleaseRule": "发布前提：每个已声明平台与入口的滚动版本矩阵都使用同一 tarball 通过全部相关自动化门禁（复合证据释放链、canonical 派发计数、配置重载无回退、安装/停用/移除、真实设置页停止接管、真实 Grok 0.1.26 MCP 握手、干净安装与复打包哈希核对）；公开发布还需用户人工审核放行",
+  "releaseScope": "Windows x64 Desktop、macOS Apple Silicon Desktop、Linux x64 CLI/Web；用户需自行准备 Grok 0.1.26、配置和凭据；各入口按滚动版本矩阵分别验收；不自动安装 Grok，不修改正式 profile 或共享配置",
+  "betaKnownLimitations": [
+    "Windows x64 Desktop 矩阵已通过；Linux x64 CLI/Web 隔离生命周期已通过，但 Web 设置页浏览器 DOM 未验证；macOS Apple Silicon Desktop 仍待真机或 ARM runner 门禁",
+    "engines.dsh 是所有目标版本的并集，不编码 OS/入口差异；只有 targets 明列且完成验收的组合属于支持范围，不能据 npm 版本接受推断其他组合已验证",
+    "不承诺 macOS Intel 或官方 Linux Desktop；Linux 目标是 DSH CLI/Web",
+    "宿主无 release 专属事件；释放与校正按复合证据判定（意图提交 + 路由恢复验证 + 相对计数窗口为零 + 完成回执），不冒充宿主专属回执",
+    "Beta 不支持源码 live HMR（归 M6）；跨资源提交崩溃、完整在途事务与官方联网 fetch 验收未覆盖",
+    "不自动安装 Grok；除在 profile 目录写入自身 control-intent.records 记录外，不修改 profile 配置、共享配置或凭据；建议先在单独 profile 中试用",
+    "停止接管后没有“恢复接管”按钮：需完整退出 DSH，删除 profile 内 control-intent.records 后重启",
+    "卸载不清理 profile 内的 control-intent.records 记录；残留记录不影响搜索或其他功能"
+  ]
+}

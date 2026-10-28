@@ -1,0 +1,11 @@
+- insert:
+    - id: grok-search-core
+      name: dsh-grok-search
+    - id: grok-search-control
+      name: dsh-grok-search/control
+    - id: grok-search-settings-ui
+      name: dsh-grok-search/settings-ui
+    - id: grok-search-route-verifier
+      name: dsh-grok-search/route-verifier
+    - id: grok-search-recovery
+      name: dsh-grok-search/recovery

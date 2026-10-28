@@ -1,0 +1,100 @@
+{
+  "name": "dsh-grok-search",
+  "version": "0.1.0-beta.1",
+  "type": "module",
+  "description": "用你自己的 grok-search-rs（Grok）接管 DSH 内置网页搜索；失败明确报错，不回退官方搜索。",
+  "engines": {
+    "node": ">=22.0.0",
+    "dsh": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4"
+  },
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "node --test test/provider-core.test.mjs test/commit-message.test.mjs",
+    "test:provider": "node --test test/provider-core.test.mjs test/commit-message.test.mjs",
+    "test:control": "node --test test/control-intent-store.test.mjs test/startup-recovery.test.mjs test/control-intent-migration.test.mjs",
+    "test:migration": "node --test test/control-intent-migration.test.mjs",
+    "test:release": "node --test test/release-transaction.test.mjs",
+    "test:wiring": "node --test test/product-wiring.test.mjs",
+    "test:client": "node --test test/client.test.mjs",
+    "verify:product-install": "node scripts/b2-product-install.mjs",
+    "check:commit": "node scripts/check-commit-message.mjs",
+    "verify:internal": "node scripts/internal-candidate.mjs",
+    "test:all": "npm run check && npm test && npm run test:control && npm run test:release && npm run test:wiring && npm run test:client",
+    "prepublishOnly": "npm run test:all",
+    "pack:beta": "node scripts/pack-internal.mjs --beta"
+  },
+  "files": [
+    "src/core/",
+    "src/index.mjs",
+    "src/provider.mjs",
+    "src/control.mjs",
+    "src/recovery.mjs",
+    "src/route-verifier.mjs",
+    "src/settings-ui.mjs",
+    "src/typert.host.mjs",
+    "src/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "support-matrix.json",
+    "LICENSE"
+  ],
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./package.json": "./package.json",
+    "./control-intent": "./src/core/control-intent-store.mjs",
+    "./startup-recovery": "./src/core/startup-recovery.mjs",
+    "./release-transaction": "./src/core/release-transaction.mjs",
+    "./control": "./src/control.mjs",
+    "./recovery": "./src/recovery.mjs",
+    "./route-verifier": "./src/route-verifier.mjs",
+    "./settings-ui": "./src/settings-ui.mjs",
+    "./typert": "./src/typert.host.mjs",
+    "./client": "./src/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4",
+    "@deepseek-ai/dsh-web": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4",
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/schemastery": "~3.18.5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.4.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "web-search",
+    "grok",
+    "grok-search-rs",
+    "mcp"
+  ],
+  "author": "Lain-in-coding",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Lain-in-coding/dsh-grok-search.git"
+  },
+  "homepage": "https://github.com/Lain-in-coding/dsh-grok-search#readme",
+  "bugs": {
+    "url": "https://github.com/Lain-in-coding/dsh-grok-search/issues"
+  },
+  "publishConfig": {
+    "tag": "next",
+    "access": "public"
+  }
+}
