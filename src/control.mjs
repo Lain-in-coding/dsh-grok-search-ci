@@ -33,7 +33,7 @@ export function projectPublicSnapshot(current, disposed = false) {
   };
 }
 
-export function apply(ctx) {
+export async function apply(ctx) {
   const store = createProductStore(ctx);
   let disposed = false;
   let routeVerifier = null;
@@ -221,6 +221,11 @@ export function apply(ctx) {
   const publicSnapshot = () => {
     return projectPublicSnapshot(snapshot(), disposed);
   };
+  ctx.on('loader/volatile-update', paths => {
+    const searchRouteChanged = Array.isArray(paths) && paths.some(path =>
+      Array.isArray(path) && path.length === 2 && path[0] === 'config' && path[1] === 'searchProvider');
+    if (searchRouteChanged && !disposed) void refresh().catch(error => ctx.logger?.error?.(error));
+  });
   ctx.provide('grokSearchControl', {
     snapshot,
     publicSnapshot,
@@ -231,7 +236,10 @@ export function apply(ctx) {
     productBundle: PRODUCT_SEARCH_BUNDLE,
     recoveryBundle: PRODUCT_RECOVERY_BUNDLE,
   });
-  ctx.inject(['web'], () => { void refresh().catch(error => ctx.logger?.error?.(error)); });
+  // Startup must not report the control entry as ready while the author route is
+  // still active. The web route is volatile, so takeover updates its live config
+  // without restarting this dependency fiber.
+  await ctx.inject(['web'], async () => { await refresh(); });
   ctx.effect(() => () => {
     disposed = true;
     state.phase = 'disposed';

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import test from 'node:test';
 import { apply as applyControl, projectPublicSnapshot } from '../src/control.mjs';
 import { apply as applyRecovery } from '../src/recovery.mjs';
@@ -33,16 +34,20 @@ function makeContext({ bundles, verifier, originalCalls } = {}) {
   const webFiber = {
     uid: 42, state: 2, config: { searchProvider: 'candidate-original', fetchProvider: 'candidate-fetch' },
     ctx: { get: name => services.get(name) },
-    update(next) {
-      this.config = structuredClone(next);
-      services.set('web', { searchProviderId: next.searchProvider ?? null, fetchProviderId: next.fetchProvider ?? null });
-    },
-    async await() { return this; },
+    update() { throw new Error('web fiber must not restart for a volatile route update'); },
   };
   const web = {
     options: { id: 'web', name: '@deepseek-ai/dsh-web', config: { searchProvider: 'candidate-original', fetchProvider: 'candidate-fetch' },
       inject: { candidateExistingDependency: { probe: 'preserve' } } },
     fiber: webFiber,
+    async update(options) {
+      if (isDeepStrictEqual(web.options.config, options.config)) return;
+      web.options.config = structuredClone(options.config);
+      webFiber.config = structuredClone(options.config);
+      services.set('web', { searchProviderId: options.config.searchProvider ?? null,
+        fetchProviderId: options.config.fetchProvider ?? null });
+      ctx.emit('loader/volatile-update', [['config', 'searchProvider']]);
+    },
   };
   const recovery = { options: { id: 'grok-search-recovery', name: 'dsh-grok-search/recovery' }, fiber: { uid: 43, state: 2 } };
   const entries = [web, recovery];
@@ -58,6 +63,7 @@ function makeContext({ bundles, verifier, originalCalls } = {}) {
     get: name => services.get(name),
     inject: (_names, callback) => callback(ctx),
     on: (name, callback) => { const list = events.get(name) ?? []; list.push(callback); events.set(name, list); },
+    emit: (name, ...args) => { for (const callback of events.get(name) ?? []) callback(...args); },
     effect: factory => { const disposer = factory(); if (typeof disposer === 'function') disposers.push(disposer); },
     dispose: () => { for (const disposer of disposers.splice(0)) disposer(); },
     events,
@@ -79,10 +85,11 @@ function createRequiredRecord(ctx, store, hostId) {
 
 test('product control entry creates one versioned record and ordinary dispose does not release it', async () => {
   const ctx = makeContext();
-  applyControl(ctx);
+  await applyControl(ctx);
+  assert.equal(ctx.get('web').searchProviderId, 'grok-search');
   const service = ctx.get('grokSearchControl');
   assert.ok(service);
-  const snapshot = await service.retry();
+  const snapshot = service.snapshot();
   assert.equal(snapshot.phase, 'required');
   assert.equal(snapshot.path, join(ctx.profileContext.dir, 'control-intent.records'));
   const before = createProductStore(ctx).read();
@@ -93,10 +100,27 @@ test('product control entry creates one versioned record and ordinary dispose do
   assert.equal(before.intent.lease.provider, 'grok-search');
   assert.equal(snapshot.routeChanged, true);
   assert.equal(ctx.get('web').searchProviderId, 'grok-search');
+  assert.equal(ctx.loader.entries()[0].options.config.searchProvider, 'candidate-original');
   ctx.dispose();
   assert.equal(service.snapshot().phase, 'disposed');
   assert.equal(ctx.get('web').searchProviderId, 'grok-search');
   assert.deepEqual(createProductStore(ctx).read(), before);
+});
+
+test('product control reasserts takeover after a live search-provider config reload', async () => {
+  const ctx = makeContext();
+  await applyControl(ctx);
+  const entry = ctx.loader.entries()[0];
+  entry.options.config = { searchProvider: 'candidate-original', fetchProvider: 'candidate-fetch' };
+  entry.fiber.config = { searchProvider: 'candidate-original', fetchProvider: 'candidate-fetch' };
+  ctx.get('web').searchProviderId = 'candidate-original';
+
+  ctx.emit('loader/volatile-update', [['config', 'searchProvider']]);
+  const snapshot = await ctx.get('grokSearchControl').retry();
+
+  assert.equal(snapshot.phase, 'required');
+  assert.equal(ctx.get('web').searchProviderId, 'grok-search');
+  assert.equal(entry.options.config.searchProvider, 'candidate-original');
 });
 
 test('product control tolerates an older required acquisition without the new author-presence field', async () => {
@@ -107,7 +131,7 @@ test('product control tolerates an older required acquisition without the new au
   const lease = createLease(ctx);
   const prior = store.compareAndSwap({ expectedRevision: 0, intent: {
     schemaVersion: 1, policy: 'required', reason: 'older-required-record', acquisition, lease, release: null } });
-  applyControl(ctx);
+  await applyControl(ctx);
   const snapshot = await ctx.get('grokSearchControl').retry();
   assert.equal(snapshot.phase, 'required');
   const after = store.read();
@@ -119,7 +143,7 @@ test('product control tolerates an older required acquisition without the new au
 });
 test('product owner explicit stop releases the route and records completion', async () => {
   const ctx = makeContext({ originalCalls: 0 });
-  applyControl(ctx);
+  await applyControl(ctx);
   const service = ctx.get('grokSearchControl');
   const required = await service.retry();
   assert.equal(required.phase, 'required');
@@ -149,7 +173,7 @@ test('product owner explicit stop releases the route and records completion', as
 
 test('product control stop prelude failure is recorded and retryable', async () => {
   const ctx = makeContext();
-  applyControl(ctx);
+  await applyControl(ctx);
   const service = ctx.get('grokSearchControl');
   await service.retry();
 
@@ -171,7 +195,7 @@ test('product control stop prelude failure is recorded and retryable', async () 
 
 test('product control refresh waits for an in-flight release instead of writing a required revision', async () => {
   const ctx = makeContext({ originalCalls: 0 });
-  applyControl(ctx);
+  await applyControl(ctx);
   const service = ctx.get('grokSearchControl');
   await service.retry();
 
@@ -200,8 +224,9 @@ test('route takeover rejects when the host does not apply the product provider',
       config: { searchProvider: 'candidate-original', fetchProvider: 'candidate-fetch' } },
     fiber: {
       uid: 7, state: 2, config: { searchProvider: 'candidate-original', fetchProvider: 'candidate-fetch' },
-      ctx: { get: () => runtime }, update() {}, await: async () => {},
+      ctx: { get: () => runtime },
     },
+    async update() {},
   };
   const ctx = { loader: { entries: () => [entry] } };
   await assert.rejects(() => takeOverAuthorRoute(ctx, { authorSearchProvider: 'candidate-original' },
@@ -219,16 +244,14 @@ test('route takeover rolls back when the host update throws after applying a cha
     fiber: {
       uid: 7, state: 2, config: { searchProvider: 'candidate-original', fetchProvider: 'candidate-fetch' },
       ctx: { get: () => runtime },
-      update(next) {
-        this.config = structuredClone(next);
-        runtime.searchProviderId = next.searchProvider;
-        runtime.fetchProviderId = next.fetchProvider;
-      },
-      async await() {
-        attempts += 1;
-        if (attempts === 1) throw new Error('host update failed');
-        return this;
-      },
+    },
+    async update(options) {
+      entry.options.config = structuredClone(options.config);
+      entry.fiber.config = structuredClone(options.config);
+      runtime.searchProviderId = options.config.searchProvider;
+      runtime.fetchProviderId = options.config.fetchProvider;
+      attempts += 1;
+      if (attempts === 1) throw new Error('host update failed');
     },
   };
   const ctx = { loader: { entries: () => [entry] } };

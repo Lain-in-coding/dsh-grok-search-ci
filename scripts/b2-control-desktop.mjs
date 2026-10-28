@@ -386,6 +386,7 @@ try{
         assert.equal(required.productControl.phase, 'required');
         assert.equal(required.runtimeWeb.searchProviderId, 'grok-search');
         const stopped = await host.probe('product-stop', { reason: 'explicit-product-release' });
+        writeJson(join(directory, runtime.app.version + '-canonical-stop-state.json'), safe(stopped));
         const stopOutcome = stopped.productStopOutcome ?? stopped.productControl.releaseOutcome;
         assert.equal(stopped.productControl.phase, 'released');
         assert.equal(stopOutcome.kind, 'released');

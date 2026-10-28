@@ -229,16 +229,19 @@ export function effectiveFetchProvider(entry) {
     ?? process.env.DSH_WEB_FETCH_PROVIDER ?? null;
 }
 
-async function updateWebEntry(entry, next) {
-  entry.fiber.update(next, true);
-  let timer;
+async function updateWebEntry(entry, next, preserveEntryConfig = false) {
+  if (typeof entry.update !== 'function') {
+    throw new ControlRecordError('CONTROL_ROUTE_UPDATE_CAPABILITY_REQUIRED',
+      'The loader entry cannot apply a volatile route update.');
+  }
+  const entryConfig = entry.options?.config;
+  if (entry.options && entry.fiber?.config) {
+    entry.options.config = { ...entryConfig, ...rawConfig(entry.fiber.config) };
+  }
   try {
-    await Promise.race([entry.fiber.await(), new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new ControlRecordError('CONTROL_ROUTE_UPDATE_TIMEOUT',
-        'The web target did not finish the route update before the deadline.')), 2_000);
-    })]);
+    await entry.update({ config: next });
   } finally {
-    clearTimeout(timer);
+    if (preserveEntryConfig && entry.options) entry.options.config = entryConfig;
   }
   if (entry.fiber.state !== 2) throw new ControlRecordError('CONTROL_ROUTE_UPDATE_FAILED',
     'The web target is not active after the route update.');
@@ -255,10 +258,10 @@ export async function takeOverAuthorRoute(ctx, acquisition, lease) {
   }
   const current = rawConfig(entry.fiber.config);
   const rollback = async () => {
-    try { await updateWebEntry(entry, current); } catch {}
+    try { await updateWebEntry(entry, current, true); } catch {}
   };
   try {
-    await updateWebEntry(entry, { ...current, searchProvider: PRODUCT_PROVIDER_ID });
+    await updateWebEntry(entry, { ...current, searchProvider: PRODUCT_PROVIDER_ID }, true);
   } catch (error) {
     await rollback();
     throw error;

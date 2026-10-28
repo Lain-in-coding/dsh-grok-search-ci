@@ -1610,6 +1610,10 @@ async function linuxWorker(options) {
 
     const profilePatch = [
       { id: 'agent-default-model', config: { provider: 'candidate-offline', model: 'fixture-native' } },
+      {
+        id: 'ui-settings-general',
+        config: { welcomeNoticeVersion: '2026-09-28.1' },
+      },
       { id: 'web', config: { searchProvider: 'deepseek-official', fetchProvider: 'candidate-fetch' } },
       {
         id: 'web-search-deepseek',
