@@ -111,7 +111,19 @@ async function start(runtime,folder,phase,fault=null,versioned=true,productCount
       }
       await sleep(200);
     }
-    throw new Error('Desktop startup did not produce an isolated probe.');
+    const startupDiagnostic=safe({
+      pid:child.pid,
+      exited:state.exited,
+      exitCode:state.exitCode??null,
+      signal:state.signal??null,
+      spawnError:state.spawnError??null,
+      addressFileExists:existsSync(addressPath),
+      debuggerPort,
+      hostInspectPort,
+      stdoutTail:readFileSync(stdoutPath,'utf8').slice(-6000),
+      stderrTail:readFileSync(stderrPath,'utf8').slice(-6000),
+    });
+    throw new Error('Desktop startup did not produce an isolated probe: '+JSON.stringify(startupDiagnostic));
   } catch(error){await close(state);throw error;}
 }
 async function close(state) {
