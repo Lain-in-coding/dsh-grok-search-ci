@@ -21,6 +21,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { arch, homedir, platform, release, tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gunzipSync } from 'node:zlib';
+import { connectRenderer, waitForRenderer } from './lib/renderer-cdp.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const PROJECT_ROOT = resolve(dirname(SCRIPT_PATH), '..');
@@ -57,6 +58,7 @@ function parseArgs(argv) {
     ['--dsh-version', 'dshVersion'],
     ['--product-package', 'productPackage'],
     ['--grok-linux-archive', 'grokLinuxArchive'],
+    ['--browser-executable', 'browserExecutable'],
     ['--case', 'case'],
     ['--run-id', 'runId'],
     ['--staged-runtime-archive', 'stagedRuntimeArchive'],
@@ -79,6 +81,9 @@ function parseArgs(argv) {
   if (!options.dshCli || !options.dshVersion || !options.productPackage || !options.grokLinuxArchive
     || !options.pnpmEntry || !options.pnpmStore || !options.pnpmCache) {
     throw new Error(`--dsh-cli, --dsh-version, --product-package, --grok-linux-archive, --pnpm-entry, --pnpm-store and --pnpm-cache are required.\n${usage()}`);
+  }
+  if (options.case === 'full' && !options.browserExecutable) {
+    throw new Error(`--browser-executable is required for the full case.\n${usage()}`);
   }
   if (!VERSIONS[options.dshVersion]) {
     throw new Error(`Unsupported --dsh-version ${JSON.stringify(options.dshVersion)}; expected rc3 or rc4.`);
@@ -749,6 +754,7 @@ async function windowsBootstrap(options) {
         '--dsh-version', options.dshVersion,
         '--product-package', paths.productPackage,
         '--grok-linux-archive', paths.grokLinuxArchive,
+        ...(options.browserExecutable ? ['--browser-executable', options.browserExecutable] : []),
         '--case', options.case,
         '--staged-runtime-archive', archive,
         '--bootstrap-file', bootstrapFile,
@@ -1062,6 +1068,7 @@ async function linuxWorker(options) {
     [options.pnpmEntry, '<PNPM_ENTRY>'],
     [options.pnpmStore, '<HOST_PNPM_STORE>'],
     [options.pnpmCache, '<HOST_PNPM_CACHE>'],
+    ...(options.browserExecutable ? [[options.browserExecutable, '<BROWSER_EXECUTABLE>']] : []),
   ]);
   const steps = [];
   const checks = [];
@@ -1910,6 +1917,320 @@ async function linuxWorker(options) {
       return body.value;
     };
 
+    const browserSettingsDom = async () => {
+      const browserProfile = join(runRoot, 'browser-profile');
+      mkdirSync(browserProfile, { recursive: false });
+      const browserEnv = {
+        ...dshEnv,
+        HOME: home,
+        TMPDIR: join(runRoot, 'tmp'),
+        XDG_CONFIG_HOME: join(runRoot, 'xdg-config'),
+        XDG_CACHE_HOME: join(runRoot, 'xdg-cache'),
+        XDG_DATA_HOME: join(runRoot, 'xdg-data'),
+      };
+      const child = spawn(options.browserExecutable, [
+        '--headless=new',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-default-browser-check',
+        `--user-data-dir=${browserProfile}`,
+        '--remote-debugging-address=127.0.0.1',
+        '--remote-debugging-port=0',
+        'about:blank',
+      ], {
+        cwd: workspace,
+        env: browserEnv,
+        shell: false,
+        detached: true,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', chunk => { if (stdout.length < 4 * 1024 * 1024) stdout += chunk; });
+      child.stderr.on('data', chunk => { if (stderr.length < 4 * 1024 * 1024) stderr += chunk; });
+      const exited = new Promise(resolvePromise => {
+        child.once('close', (code, signal) => resolvePromise({ code, signal }));
+      });
+      let renderer = null;
+      const startedAt = Date.now();
+      try {
+        const debug = await waitFor(() => {
+          const match = stderr.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//);
+          return match ? { port: Number(match[1]) } : null;
+        }, 30_000, 'Linux browser DevTools endpoint');
+        renderer = await connectRenderer(debug.port, { timeoutMs: 20_000 });
+        await renderer.send('Page.enable');
+        await renderer.send('Network.enable');
+        const cookieName = auth.cookie.slice(0, auth.cookie.indexOf('='));
+        const cookieValue = auth.cookie.slice(auth.cookie.indexOf('=') + 1);
+        const cookieResult = await renderer.send('Network.setCookie', {
+          name: cookieName,
+          value: cookieValue,
+          url: `${auth.hostOrigin}/`,
+          path: '/',
+          httpOnly: true,
+          sameSite: 'Lax',
+        });
+        check('linux-settings-ui-browser-auth-cookie', cookieResult.success === true,
+          { browserCookieAccepted: cookieResult.success === true });
+        await renderer.evaluate(`setTimeout(() => location.assign(${JSON.stringify(`${auth.hostOrigin}/`)}), 0); true`);
+        const initialPage = await waitForRenderer(renderer, current => current.evaluate(`(() => {
+          const text = document.body?.innerText ?? '';
+          if (document.readyState !== 'complete' || !text.trim()) return null;
+          return {
+            href: location.href,
+            title: document.title,
+            text,
+            controls: [...document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"],a')]
+              .map(item => ({
+                tag: item.tagName,
+                text: (item.innerText || item.getAttribute('aria-label') || item.title || '').trim(),
+                role: item.getAttribute('role'),
+                visible: item.getClientRects().length > 0,
+              }))
+              .filter(item => item.text)
+              .slice(0, 200),
+          };
+        })()`), { timeoutMs: 30_000 });
+        evidence.json('linux-settings-initial-ui.json', initialPage);
+        const workspaceSelection = await renderer.evaluate(`(() => {
+          const controls = [...document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"],a')]
+            .filter(item => item.getClientRects().length > 0);
+          const target = controls.find(item =>
+            /^(Choose workspace|选择工作区)$/.test((item.innerText || item.getAttribute('aria-label') || '').trim()));
+          if (!target) return { clicked: false, text: '' };
+          target.click();
+          return { clicked: true, text: (target.innerText || target.getAttribute('aria-label') || '').trim() };
+        })()`);
+        evidence.json('linux-settings-workspace-selection.json', workspaceSelection);
+        if (workspaceSelection.clicked) {
+          const workspaceOpen = await waitForRenderer(renderer, current => current.evaluate(`(() => {
+            const button = [...document.querySelectorAll('button,[role="button"]')]
+              .find(item => item.getClientRects().length > 0
+                && /^(Open|打开)$/.test((item.innerText || item.getAttribute('aria-label') || '').trim()));
+            if (!button) return null;
+            const observation = {
+              text: (button.innerText || button.getAttribute('aria-label') || '').trim(),
+              disabled: button.disabled === true,
+            };
+            if (observation.disabled) return null;
+            button.click();
+            return observation;
+          })()`), { timeoutMs: 20_000 });
+          evidence.json('linux-settings-workspace-open.json', workspaceOpen);
+        }
+        let shell;
+        try {
+          shell = await waitForRenderer(renderer, current => current.evaluate(`(() => {
+            const text = document.body?.innerText ?? '';
+            if (document.readyState !== 'complete' || !text.trim()) return null;
+            const buttons = [...document.querySelectorAll('button,[role="button"],[role="menuitem"]')];
+            const more = buttons.find(item => /^(Account menu|账号菜单)$/
+              .test((item.getAttribute('aria-label') || item.innerText || '').trim()))
+              ?? buttons.find(item => /^(More|更多)$/.test((item.innerText || '').trim()));
+            return more ? {
+              href: location.href,
+              text,
+              moreText: (more.innerText || more.getAttribute('aria-label') || '').trim(),
+            } : null;
+          })()`), { timeoutMs: 30_000 });
+        } catch (error) {
+          const diagnostic = await renderer.evaluate(`(() => ({
+            href: location.href,
+            title: document.title,
+            readyState: document.readyState,
+            text: document.body?.innerText ?? '',
+            html: document.documentElement?.outerHTML?.slice(0, 20_000) ?? '',
+          }))()`).catch(evaluateError => ({ evaluateError: evaluateError.message }));
+          evidence.json('linux-settings-shell-failure.json', diagnostic);
+          throw new Error(`Linux browser shell did not become ready: ${JSON.stringify(diagnostic).slice(0, 2_000)}`);
+        }
+        evidence.json('linux-settings-shell-ui.json', shell);
+        await renderer.evaluate(`(() => {
+          const buttons = [...document.querySelectorAll('button,[role="button"],[role="menuitem"]')];
+          const more = buttons.find(item => /^(Account menu|账号菜单)$/
+            .test((item.getAttribute('aria-label') || item.innerText || '').trim()))
+            ?? buttons.find(item => /^(More|更多)$/.test((item.innerText || '').trim()));
+          if (!more) throw new Error('Account menu button was not found.');
+          more.click();
+        })()`);
+        const settingsEntryClick = await waitForRenderer(renderer, current => current.evaluate(`(() => {
+          const item = [...document.querySelectorAll('button,[role="menuitem"],[role="button"],a')]
+            .find(row => /设置|Settings/.test((row.getAttribute('aria-label') || row.innerText || '').trim()));
+          if (!item) return null;
+          const observation = {
+            text: (item.innerText || item.getAttribute('aria-label') || '').trim(),
+            role: item.getAttribute('role'),
+            controls: [...document.querySelectorAll('button,[role="menuitem"],[role="button"],a')]
+              .map(row => ({
+                text: (row.innerText || row.getAttribute('aria-label') || '').trim(),
+                role: row.getAttribute('role'),
+              }))
+              .filter(row => row.text),
+          };
+          item.click();
+          return observation;
+        })()`), { timeoutMs: 10_000 });
+        evidence.json('linux-settings-entry-ui.json', settingsEntryClick);
+        try {
+          const sectionClick = await waitForRenderer(renderer, current => current.evaluate(`(() => {
+            const section = [...document.querySelectorAll('button,[role="tab"]')]
+              .find(item => /^(内置插件|Built-in plugins)$/
+                .test((item.getAttribute('aria-label') || item.innerText || '').trim()));
+            if (!section) return null;
+            const observation = {
+              text: (section.innerText || section.getAttribute('aria-label') || '').trim(),
+              controls: [...document.querySelectorAll('button,[role="button"],[role="tab"],[role="menuitem"],a')]
+                .map(item => ({
+                  tag: item.tagName,
+                  text: (item.innerText || item.getAttribute('aria-label') || item.title || '').trim(),
+                  aria: item.getAttribute('aria-label'),
+                  role: item.getAttribute('role'),
+                  visible: item.getClientRects().length > 0,
+                }))
+                .filter(item => item.text || item.aria),
+            };
+            section.click();
+            return observation;
+          })()`),
+          { timeoutMs: 20_000 });
+          evidence.json('linux-settings-section-click-ui.json', sectionClick);
+        } catch (error) {
+          const diagnostic = await renderer.evaluate(`(() => ({
+            href: location.href,
+            title: document.title,
+            text: document.body?.innerText ?? '',
+            controls: [...document.querySelectorAll('button,[role="button"],[role="tab"],[role="menuitem"],a')]
+              .map(item => ({
+                tag: item.tagName,
+                text: (item.innerText || item.getAttribute('aria-label') || item.title || '').trim(),
+                aria: item.getAttribute('aria-label'),
+                role: item.getAttribute('role'),
+                visible: item.getClientRects().length > 0,
+              }))
+              .filter(item => item.text || item.aria),
+          }))()`);
+          evidence.json('linux-settings-sections-failure.json', diagnostic);
+          throw new Error(`Linux Settings sections did not render: ${JSON.stringify(diagnostic).slice(0, 2_000)}`);
+        }
+        try {
+          await waitForRenderer(renderer, current => current.evaluate(`(() => {
+            const tab = [...document.querySelectorAll('button,[role="tab"]')]
+              .find(item => /^(Grok 搜索|Grok search)$/
+                .test((item.getAttribute('aria-label') || item.innerText || '').trim()));
+            if (!tab) return null;
+            tab.click();
+            return true;
+          })()`),
+          { timeoutMs: 10_000 });
+        } catch (error) {
+          const diagnostic = await renderer.evaluate(`(() => ({
+            href: location.href,
+            title: document.title,
+            text: document.body?.innerText ?? '',
+            controls: [...document.querySelectorAll('button,[role="button"],[role="tab"],[role="menuitem"],a')]
+              .map(item => ({
+                tag: item.tagName,
+                text: (item.innerText || item.getAttribute('aria-label') || item.title || '').trim(),
+                aria: item.getAttribute('aria-label'),
+                role: item.getAttribute('role'),
+                visible: item.getClientRects().length > 0,
+              }))
+              .filter(item => item.text || item.aria),
+            grokElements: [...document.querySelectorAll('*')]
+              .filter(item => /Grok/.test((item.innerText || item.textContent || '').trim()))
+              .slice(-30)
+              .map(item => ({
+                tag: item.tagName,
+                id: item.id,
+                role: item.getAttribute('role'),
+                text: (item.innerText || item.textContent || '').trim().slice(0, 500),
+              })),
+          }))()`);
+          evidence.json('linux-settings-grok-tab-failure.json', diagnostic);
+          throw new Error(`Linux Grok settings tab did not render: ${JSON.stringify(diagnostic).slice(0, 2_000)}`);
+        }
+        const detail = await waitForRenderer(renderer, current => current.evaluate(`(() => {
+          const root = document.querySelector('[data-grok-search-settings]');
+          if (!root) return null;
+          const buttons = [...root.querySelectorAll('button,[role="button"]')]
+            .map(item => ({
+              text: (item.innerText || item.getAttribute('aria-label') || item.title || '').trim(),
+              disabled: item.disabled === true || item.getAttribute('aria-disabled') === 'true',
+              visible: item.getClientRects().length > 0,
+            }))
+            .filter(item => item.text);
+          return {
+            href: location.href,
+            title: document.title,
+            text: root.innerText,
+            bodyText: document.body.innerText,
+            buttons,
+            error: root.querySelector('[role="alert"]')?.textContent?.trim() ?? null,
+          };
+        })()`), { timeoutMs: 30_000 });
+        evidence.json('linux-settings-grok-ui.json', detail);
+        const screenshot = await renderer.send('Page.captureScreenshot', {
+          format: 'png',
+          fromSurface: true,
+          captureBeyondViewport: true,
+        });
+        writeFileSync(join(artifactDir, 'linux-settings-grok-ui.png'),
+          Buffer.from(screenshot.data, 'base64'));
+        const stopButton = detail.buttons.find(item =>
+          /^(停止接管并恢复原搜索|Stop takeover and restore search)$/.test(item.text) && item.visible);
+        check('linux-settings-ui-open', detail.href.startsWith(`${auth.hostOrigin}/`)
+          && /内置插件|Built-in plugins|Grok 搜索|Grok search/.test(detail.bodyText), {
+          href: detail.href,
+          title: detail.title,
+        });
+        check('linux-settings-ui-takeover', /接管|Takeover/.test(detail.text)
+          && !/错误|失败|Error|Failed/.test(detail.text), {
+          text: detail.text,
+        });
+        check('linux-settings-ui-stop-button', Boolean(stopButton) && stopButton.disabled === false, {
+          stopButton: stopButton ?? null,
+          buttons: detail.buttons,
+        });
+        check('linux-settings-ui-no-error', detail.error === null, { error: detail.error });
+        step('browser-settings-dom', {
+          browser: '<BROWSER_EXECUTABLE>',
+          href: detail.href,
+          title: detail.title,
+          settingsText: detail.text,
+          stopButton,
+          screenshot: 'linux-settings-grok-ui.png',
+        });
+        return detail;
+      } finally {
+        renderer?.close();
+        try { process.kill(-child.pid, 'SIGTERM'); } catch {}
+        const graceful = await Promise.race([exited, delay(5_000).then(() => null)]);
+        if (graceful === null) {
+          try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+          await Promise.race([exited, delay(2_000)]);
+        }
+        const result = await Promise.race([exited, Promise.resolve({ code: null, signal: 'running' })]);
+        evidence.text('logs/linux-browser.stdout.log', stdout);
+        evidence.text('logs/linux-browser.stderr.log', stderr);
+        evidence.recordExecution({
+          label: 'linux-browser-settings-dom',
+          command: options.browserExecutable,
+          args: ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
+            '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0'],
+          cwd: '<WORKSPACE>',
+          exitCode: result.code,
+          signal: result.signal,
+          durationMs: Date.now() - startedAt,
+        });
+      }
+    };
+
     const initial = await waitFor(async () => {
       const value = await probe();
       return value.runtimeWeb?.searchProviderId === 'grok-search'
@@ -2127,6 +2448,8 @@ async function linuxWorker(options) {
       grokResponsesRequests: grokResponsesStub.requests.length,
       canonicalCounter: chatTurn.snapshot.originalSearchCounter,
     });
+
+    await browserSettingsDom();
 
     if (options.case === 'stop' || options.case === 'full') {
       const settingsBefore = await rpc('settings-snapshot-before-stop', 'grokSearchSettings/snapshot', {});
@@ -2578,6 +2901,7 @@ async function linuxWorker(options) {
     finishedAt: new Date().toISOString(),
     sourceHashes: [
       'scripts/b3-cli-web.mjs',
+      'scripts/lib/renderer-cdp.mjs',
       'fixtures/cli-web/fixture.mjs',
       ...(packageReceipt?.files ?? []).map(({ path }) => path),
     ].map(file => ({ file, sha256: existsSync(join(PROJECT_ROOT, file)) ? sha256(join(PROJECT_ROOT, file)) : null })),
@@ -2606,6 +2930,11 @@ async function linuxWorker(options) {
       },
       isolatedDshHome: '<RUN_ROOT>/dsh-home',
       isolatedWorkspace: '<RUN_ROOT>/workspace',
+      browser: options.browserExecutable ? {
+        executable: '<BROWSER_EXECUTABLE>',
+        isolatedProfile: '<RUN_ROOT>/browser-profile',
+        headless: true,
+      } : null,
       inheritedCredentialEnvironmentPassed: false,
       authAndCookieRedacted: true,
     },
@@ -2624,8 +2953,8 @@ async function linuxWorker(options) {
       'The model and fetch provider are isolated offline fixtures.',
       'The official search path enables the real dsh web-search-deepseek provider against a 127.0.0.1-only Anthropic-format stub.',
       'Canonical official-search evidence comes from the product route verifier and dsh-session canonical event; the fixture event listener is a supporting cross-check only.',
-      'Web startup, authentication, session RPC, route mutation and settings stop are real dsh HTTP paths.',
-      'No browser UI rendering, formal profile, shared Grok config, user credential, publication, commit or push was used.',
+      'Web startup, authentication, session RPC, route mutation, browser Settings/Plugins DOM and settings stop are real dsh HTTP/Web paths.',
+      'The Linux browser uses an isolated profile and headless Chromium; no formal profile, shared Grok config, user credential, publication, commit or push was used.',
       'Temporary DSH_HOME and runtime paths are intentionally not part of public profile state.',
     ],
     artifacts: {
@@ -2645,6 +2974,10 @@ async function linuxWorker(options) {
         ? 'grok-responses-stub-final.json' : 'grok-responses-stub-start.json',
       webStderr: 'logs/dsh-web.stderr.log',
       webStdout: 'logs/dsh-web.stdout.log',
+      settingsUi: existsSync(join(artifactDir, 'linux-settings-grok-ui.json'))
+        ? 'linux-settings-grok-ui.json' : null,
+      settingsUiScreenshot: existsSync(join(artifactDir, 'linux-settings-grok-ui.png'))
+        ? 'linux-settings-grok-ui.png' : null,
     },
   };
   evidence.json('summary.json', summary);

@@ -21,7 +21,7 @@ async function pageTarget(port, timeoutMs) {
   throw new Error('Desktop renderer CDP target did not become ready.' + (last ? ' ' + last.message : ''));
 }
 
-export async function connectRenderer(port, { timeoutMs = 20_000 } = {}) {
+export async function connectRenderer(port, { timeoutMs = 20_000, requestTimeoutMs = 15_000 } = {}) {
   const target = await pageTarget(port, timeoutMs);
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
@@ -49,7 +49,15 @@ export async function connectRenderer(port, { timeoutMs = 20_000 } = {}) {
   });
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++serial;
-    pending.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      if (!pending.delete(id)) return;
+      reject(new Error(`Renderer CDP request timed out: ${method}`));
+    }, requestTimeoutMs);
+    timer.unref?.();
+    pending.set(id, {
+      resolve(value) { clearTimeout(timer); resolve(value); },
+      reject(error) { clearTimeout(timer); reject(error); },
+    });
     socket.send(JSON.stringify({ id, method, params }));
   });
   await send('Runtime.enable');
@@ -68,6 +76,7 @@ export async function connectRenderer(port, { timeoutMs = 20_000 } = {}) {
   };
   return Object.freeze({
     target,
+    send,
     evaluate,
     consoleEntries,
     close() { socket.close(); },

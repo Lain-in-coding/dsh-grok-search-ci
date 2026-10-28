@@ -97,7 +97,7 @@ function packageReceipt(tarball) {
 // no product entry exists to report it, so the record is read directly from disk.
 function recordStore(profile) {
   return createControlIntentStore({ directory: join(profile, 'control-intent.records'),
-    legacyPath: join(profile, 'control-intent.fixture.json') });
+    legacyPath: join(profile, 'control-intent.fixture.json'), trustedRoot: profile });
 }
 
 function verifyInstalled(profile, receiptValue, sourceRoot) {

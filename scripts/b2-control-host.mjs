@@ -76,8 +76,9 @@ function start(runtime, folder, initialize, fault = null) {
   return host;
 }
 function storeAt(folder) {
-  return createControlIntentStore({ directory: join(folder, 'dsh-home/profiles/deferred/control-intent.records'),
-    legacyPath: join(folder, 'dsh-home/profiles/deferred/control-intent.fixture.json') });
+  const profile = join(folder, 'dsh-home/profiles/deferred');
+  return createControlIntentStore({ directory: join(profile, 'control-intent.records'),
+    legacyPath: join(profile, 'control-intent.fixture.json'), trustedRoot: profile });
 }
 function stoppedSelection(folder, keepRecovery) {
   const path = join(folder, 'dsh-home/profiles/deferred/package.json');

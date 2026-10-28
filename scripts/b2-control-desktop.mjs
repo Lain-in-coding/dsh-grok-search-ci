@@ -132,7 +132,7 @@ async function close(state) {
   if(!state.exitSaved){writeJson(join(directory,state.prefix+'-exit.json'),safe(identity));state.exitSaved=true;}
   return identity;
 }
-function store(folder){return createControlIntentStore({directory:join(folder,'dsh-home/profiles/desktop/control-intent.records'),legacyPath:join(folder,'dsh-home/profiles/desktop/control-intent.fixture.json')});}
+function store(folder){const profile=join(folder,'dsh-home/profiles/desktop');return createControlIntentStore({directory:join(profile,'control-intent.records'),legacyPath:join(profile,'control-intent.fixture.json'),trustedRoot:profile});}
 function selection(folder,keepRecovery){
   const path=join(folder,'dsh-home/profiles/desktop/package.json');const value=JSON.parse(readFileSync(path,'utf8'));
   value.dsh.profile.bundles=value.dsh.profile.bundles.filter(name=>name!=='candidate-controlled-search'&&(keepRecovery||name!=='candidate-search-recovery'));

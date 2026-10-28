@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
-  readdirSync, statSync, writeFileSync,
+  readdirSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -139,6 +139,40 @@ test('an absent store reads as null without creating a storage directory', t => 
   assert.equal(store.read(), null);
   assert.deepEqual(diskSnapshot(directory), before);
   assert.equal(existsSync(directory), false);
+});
+
+test('a trusted profile permits aliases above it while rejecting links at or below it', t => {
+  if (process.platform === 'win32') {
+    t.skip('POSIX directory symlink semantics are required.');
+    return;
+  }
+  const root = mkdtempSync(join(tmpdir(), 'dsh-control-intent-trusted-root-'));
+  t.diagnostic(`Retained fixture: ${root}`);
+  const physical = join(root, 'physical');
+  const alias = join(root, 'alias');
+  const profile = join(alias, 'profile');
+  mkdirSync(join(physical, 'profile'), { recursive: true });
+  symlinkSync(physical, alias, 'dir');
+
+  const store = createControlIntentStore({
+    directory: join(profile, 'control'),
+    trustedRoot: profile,
+  });
+  assert.equal(store.compareAndSwap({ expectedRevision: 0, intent: requiredIntent() }).revision, 1);
+
+  const outside = join(root, 'outside');
+  const linkedRoot = join(profile, 'linked-control');
+  mkdirSync(outside);
+  symlinkSync(outside, linkedRoot, 'dir');
+  assert.throws(() => createControlIntentStore({
+    directory: linkedRoot,
+    trustedRoot: profile,
+  }).read(), error => error.code === 'CONTROL_RECORD_INVALID');
+
+  assert.throws(() => createControlIntentStore({
+    directory: join(profile, '..', 'escaped'),
+    trustedRoot: profile,
+  }), error => error.code === 'CONTROL_RECORD_INVALID');
 });
 
 test('CAS accepts required intent without a lease and returns detached, deeply frozen envelopes', t => {

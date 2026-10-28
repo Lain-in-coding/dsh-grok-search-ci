@@ -26,7 +26,8 @@ export function resolveTemporaryMigrationProfile(profile) {
 export function runLegacyMigration({ profile, mode, expectedRevision, expectedLegacySha256, operationId }) {
   const folder = resolveTemporaryMigrationProfile(profile);
   const legacyPath = join(folder, 'control-intent.fixture.json');
-  const store = createControlIntentStore({ directory: join(folder, 'control-intent.records'), legacyPath });
+  const store = createControlIntentStore({ directory: join(folder, 'control-intent.records'),
+    legacyPath, trustedRoot: folder });
   if (mode === 'inspect') {
     if (expectedRevision !== undefined || expectedLegacySha256 !== undefined || operationId !== undefined) {
       throw new Error('Inspection is read-only and does not accept migration approval parameters.');

@@ -20,7 +20,7 @@ globalThis.__DSH_INTERNAL_CANDIDATE__=trace;
 trace.currentSelectionAuthorization = config.currentSelectionAuthorization === true;
 trace.b2ControlRecord = config.b2ControlRecord === true;
 trace.b2RecordFault = config.b2RecordFault ?? null;
-const versionedStore = trace.b2ControlRecord ? createControlIntentStore({directory:join(profile,'control-intent.records'),legacyPath:journalPath}) : null;
+const versionedStore = trace.b2ControlRecord ? createControlIntentStore({directory:join(profile,'control-intent.records'),legacyPath:journalPath,trustedRoot:profile}) : null;
 let boot,appBoot,closing;
 const raw=value=>Object.fromEntries(Object.entries(value??{}).map(([key,item])=>[key,typeof item?.get==='function'?item.get():item]));
 function entry(id){const found=[...boot.ctx.loader.entries()].filter(row=>row.options.id===id);if(found.length!==1)throw new Error('Expected one fixture entry '+id);return found[0];}

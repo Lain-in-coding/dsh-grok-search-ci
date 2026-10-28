@@ -3,7 +3,7 @@ import {
   readFileSync, readdirSync, realpathSync, writeFileSync,
 } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 export const CONTROL_RECORD_FORMAT = 'dsh-grok-search/control-intent';
@@ -212,12 +212,19 @@ function stat(path) {
   try { return lstatSync(path); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
-function assertDirectories(path) {
+function assertDirectories(path, trustedRoot = null) {
   for (let cursor = path; ; cursor = dirname(cursor)) {
     const entry = stat(cursor);
     if (entry && (entry.isSymbolicLink() || !entry.isDirectory())) invalid('Control storage must use ordinary local directories, not links or files.');
+    if (trustedRoot !== null && cursor === trustedRoot) break;
     const parent = dirname(cursor);
     if (parent === cursor) break;
+  }
+}
+function assertWithin(path, trustedRoot) {
+  const child = relative(trustedRoot, path);
+  if (child === '..' || child.startsWith('..' + sep) || isAbsolute(child)) {
+    invalid('Control storage paths must remain inside the trusted profile directory.');
   }
 }
 function readBytes(path) {
@@ -234,15 +241,23 @@ function parse(bytes) { return parseEvidenceJson(bytes); }
  * overwrite, check-then-rename, network-filesystem fallback or automatic cleanup.
  * File-data fsync is NOT a Windows directory/power-loss durability guarantee.
  */
-export function createControlIntentStore({ directory, legacyPath, fault = () => {} }) {
+export function createControlIntentStore({ directory, legacyPath, trustedRoot = null, fault = () => {} }) {
   if (!text(directory) || !isAbsolute(directory) || rootNetworkPath(directory) || (legacyPath && (!isAbsolute(legacyPath) || rootNetworkPath(legacyPath)))) {
     invalid('Control storage and legacy evidence paths must be absolute.');
   }
+  if (trustedRoot !== null && (!text(trustedRoot) || !isAbsolute(trustedRoot) || rootNetworkPath(trustedRoot))) {
+    invalid('The trusted control storage profile must be an absolute local directory.');
+  }
   if (typeof fault !== 'function') invalid('Control fault seam must be a function.');
   const root = resolve(directory);
+  const boundary = trustedRoot === null ? null : resolve(trustedRoot);
+  if (boundary !== null) {
+    assertWithin(root, boundary);
+    if (legacyPath) assertWithin(resolve(legacyPath), boundary);
+  }
   let physicalRoot;
   const checkDirectory = () => {
-    assertDirectories(root);
+    assertDirectories(root, boundary);
     if (!stat(root)) return false;
     const actual = realpathSync.native(root);
     if (physicalRoot !== undefined && actual !== physicalRoot) invalid('Control storage identity changed.');
@@ -251,7 +266,7 @@ export function createControlIntentStore({ directory, legacyPath, fault = () => 
   };
   const legacyBytes = () => {
     if (!legacyPath) fail('CONTROL_RECORD_MIGRATION_SOURCE_MISSING');
-    assertDirectories(dirname(resolve(legacyPath)));
+    assertDirectories(dirname(resolve(legacyPath)), boundary);
     const entry = stat(legacyPath);
     if (!entry) fail('CONTROL_RECORD_MIGRATION_SOURCE_MISSING');
     if (!entry.isFile() || entry.isSymbolicLink() || entry.size > MAX_BYTES) invalid('Legacy source must be a bounded ordinary local file.');
@@ -319,7 +334,7 @@ export function createControlIntentStore({ directory, legacyPath, fault = () => 
     const targetPath = join(root, filename(candidate.revision));
     let published = false;
     try {
-      assertDirectories(root);
+      assertDirectories(root, boundary);
       mkdirSync(root, { recursive: true });
       checkDirectory();
       fault('before-stage-write', { expectedRevision, operationId, stagePath, targetPath });

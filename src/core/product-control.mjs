@@ -64,6 +64,7 @@ export function createProductStore(ctx) {
   return createControlIntentStore({
     directory: join(ctx.profileContext.dir, 'control-intent.records'),
     legacyPath: join(ctx.profileContext.dir, 'control-intent.fixture.json'),
+    trustedRoot: ctx.profileContext.dir,
   });
 }
 
