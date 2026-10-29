@@ -31,7 +31,7 @@ jobs:
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $tgz) { throw 'Beta tarball was not produced.' }
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $tgz.FullName).Hash.ToLowerInvariant()
-          if ($hash -ne 'a7b2afb13b82e54c72d9c3c157aa987af7b380755e915de61764300722204cca') {
+          if ($hash -ne 'd6a0e8a108b96a7e85fabefa84d493d651f1c9c1de2c10a86c1240effa9dfeec') {
             throw "Tarball hash changed: $hash"
           }
       - uses: actions/upload-artifact@v4

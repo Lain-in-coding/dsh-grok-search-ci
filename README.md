@@ -6,7 +6,7 @@
 
 [![npm next](https://img.shields.io/npm/v/dsh-grok-search/next?logo=npm&label=npm%20next)](https://www.npmjs.com/package/dsh-grok-search/v/0.1.0-beta.1)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Lain-in-coding/dsh-grok-search/blob/main/LICENSE)
-[![DSH 0.2.x](https://img.shields.io/badge/DSH-0.2.x-4F46E5)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH 0.2.1 rc.2 · rc.3 · rc.4](https://img.shields.io/badge/DSH-0.2.1%20rc.2%20%C2%B7%20rc.3%20%C2%B7%20rc.4-4F46E5)](https://github.com/Lain-in-coding/dsh-grok-search#支持范围)
 [![Windows · macOS · Linux](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078D4)](https://github.com/Lain-in-coding/dsh-grok-search#支持范围)
 
 </div>
@@ -38,10 +38,12 @@ DeepSeek Harness（DSH）的插件。启用后，模型仍然调用官方 `web_s
 它不适合：
 
 - 不想安装、配置 Grok 的用户。
-- 正在使用不受支持的 DSH 版本、macOS Intel Desktop 或官方尚未提供的 Linux Desktop。
+- 正在使用[支持范围](#支持范围)表外的 DSH 版本或系统组合，例如 `0.2.2-alpha.2`、macOS Intel、Windows ARM 或官方尚未提供的 Linux Desktop。
 - 希望插件自动申请 Key、自动安装 Grok 或修改共享 Grok 配置的用户。
 
 ## 快速开始
+
+开始前先在[支持范围](#支持范围)表里确认你的系统、入口和 DSH 版本。
 
 1. **准备 Grok `0.1.26`**：按当前系统安装程序，配置凭据，并确认所用的 `grok-search-rs --version` 输出 `0.1.26`。
 2. **安装插件**：Desktop 用「插件」→「添加插件」；Linux CLI/Web 用 `dsh plugin --profile web add`。安装 `dsh-grok-search@0.1.0-beta.1`。
@@ -54,17 +56,22 @@ DeepSeek Harness（DSH）的插件。启用后，模型仍然调用官方 `web_s
 
 ## 支持范围
 
-| 项目 | Beta 支持范围 |
-|---|---|
-| 操作系统与入口 | Windows x64 Desktop（已验证）；macOS Apple Silicon Desktop（门禁待完成）；Linux x64 CLI/Web（隔离生命周期已验证，浏览器 DOM 未验证） |
-| DSH 版本 | 各入口分别维护最新可用版本和一个前一已验证基线；以 [support-matrix.json](./support-matrix.json) 为准 |
-| Grok | `grok-search-rs` `0.1.26` |
-| 安装来源 | npm `next` 标签或 GitHub Pre-release 的同一个 `.tgz` |
-| Profile | Desktop 默认使用 `desktop`；CLI/Web 使用你指定的 profile |
+| 系统 | 入口 | 已验证的 DSH 版本 |
+|---|---|---|
+| Windows x64 | Desktop | `0.2.1-rc.2`、`0.2.1-rc.3` |
+| macOS Apple Silicon | Desktop | `0.2.1-rc.2`、`0.2.1-rc.3` |
+| Linux x64 | CLI/Web | `0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4` |
 
-每个平台入口都使用同一个插件 tarball，但必须分别通过自己的宿主和版本门禁。完整目标与当前验证状态见 [support-matrix.json](./support-matrix.json)。不承诺 macOS Intel Desktop，也不承诺官方尚未提供的 Linux Desktop。
+- 表里没有的组合可能装得上，但没有验证，也不承诺支持，例如 macOS Intel、Windows ARM，以及 Windows 或 macOS 上的 CLI/Web。官方没有 Linux Desktop。
+- Windows 和 macOS 推荐使用 Desktop。
+- `0.2.2-alpha.2` 暂不支持，安装时会被 DSH 拒绝。
+- 所有系统和入口共用同一个插件包，包里只有一份版本范围，DSH 在安装时和每次启动时都会检查它。版本范围是各入口版本的并集，例如其中的 `rc.4` 只对 Linux CLI/Web 验证过，不代表 Desktop `rc.4` 已验证。
+- 查看自己的 DSH 版本：Desktop 和 Web 点侧栏底部「设置」，在「通用设置」里看「当前版本」；CLI 运行 `dsh --version`。
+- Grok 基线为 `grok-search-rs` `0.1.26`。npm `next` 标签和 GitHub Pre-release 提供的是同一个 `.tgz`。
 
-包的 `engines.dsh` 是这些入口版本的并集，不代表所有系统都支持其中每个版本；例如 `rc.4` 只列入 Linux CLI/Web 目标，不能由此推断 Desktop `rc.4` 已通过。
+**升级 DSH 前先确认新版本已经在上表里。** DSH 发布新版本后，要等本插件发布把它加入版本范围的新版本才能使用。在那之前，DSH 启动时会跳过本插件，搜索按你原来的设置回到 DSH 自带搜索，界面可能没有任何提示。不要用 `dsh plugin allow-version` 强制放行未验证的版本。
+
+每个入口至少保留最新可用版本和一个前一已验证版本；版本数据以 [support-matrix.json](./support-matrix.json) 为准。
 
 ## 安装与配置
 
@@ -86,7 +93,15 @@ if (-not $grokExe) { throw '未找到当前平台的 grok-search-rs 程序。' }
 
 最后一行应输出 `grok-search-rs 0.1.26`。记下 `$grokExe` 的完整路径。
 
-macOS 或 Linux 使用同样的 npm 包；也可以直接下载上游 Release 对应的 `Darwin_universal`、`Linux_x86_64` 或其他与你的系统和架构匹配的资产。
+macOS 或 Linux 使用同样的 npm 包，在终端中运行：
+
+```bash
+npm install -g grok-search-rs@0.1.26
+GROK_EXE="$(find "$(npm root -g)/grok-search-rs" -type f -name grok-search-rs -path '*/bin/*' -print | head -n 1)"
+if [ -n "$GROK_EXE" ]; then echo "$GROK_EXE"; "$GROK_EXE" --version; else echo "未找到当前平台的 grok-search-rs 程序"; fi
+```
+
+第一行输出的就是要填给插件的绝对路径。npm 只下载与当前系统匹配的平台程序；如果找不到，检查安装时是否禁用了可选依赖（例如 `--omit=optional`）。全局安装报权限错误（`EACCES`）时，改用 nvm 等用户级 Node.js 安装方式，不要用 `sudo` 安装。
 
 **方式 B：使用上游 Release 资产**
 
@@ -105,6 +120,8 @@ macOS/Linux 的路径示例：
 ```
 
 输出应为 `grok-search-rs 0.1.26`。不要从第三方网盘或来源不明的镜像下载。
+
+macOS 提示：用浏览器下载的 Release 文件带有隔离标记，Gatekeeper 可能阻止 `grok-search-rs` 运行。先核对 `SHA256SUMS`，再在终端运行一次 `--version`。如果被拦截，到「系统设置」→「隐私与安全性」点「仍要打开」，或运行 `xattr -d com.apple.quarantine <程序的绝对路径>` 去掉隔离标记。用方式 A 的 npm 安装一般不会遇到这个问题。
 
 插件要求传入原生程序的绝对路径，不依赖 `PATH`，也不需要专用启动器。
 
@@ -149,13 +166,15 @@ dsh-grok-search@0.1.0-beta.1
 
 也可以从 GitHub Pre-release 下载 `.tgz`，然后在「添加插件」中粘贴该文件的绝对路径。安装对话框是文本输入，没有本地文件选择器。npm 与 GitHub Release 提供的是同一个 tarball。安装后先不要重启，继续完成下一步的路径配置，最后一次完整重启即可。
 
-Linux CLI/Web 用户在要使用的 Web profile 中安装（需要 Node.js 22+ 和上述已验证的 DSH CLI 版本）：
+Linux CLI/Web 用户先安装[支持范围](#支持范围)表中的 DSH CLI 版本（需要 Node.js 22+），再在要使用的 Web profile 中安装插件：
 
 ```bash
+npm install -g @deepseek-ai/dsh@0.2.1-rc.4
+dsh --version
 dsh plugin --profile web add dsh-grok-search@0.1.0-beta.1
 ```
 
-若使用 GitHub 的 `.tgz`，把命令末尾的包名换成该文件的绝对路径。先完成下一步配置，再运行 `dsh web`；无桌面环境时使用 `dsh web --no-open`，访问终端显示的本机授权链接（不要公开该链接）。不需要把 Web 服务暴露到外网。
+`dsh --version` 应输出表中的版本；已经装有表内版本时跳过第一行。若使用 GitHub 的 `.tgz`，把最后一行的包名换成该文件的绝对路径。先完成下一步配置，再运行 `dsh web`；无桌面环境时使用 `dsh web --no-open`，访问终端显示的本机授权链接（不要公开该链接）。不需要把 Web 服务暴露到外网。
 
 默认配置文件为 `$HOME/.dsh/profiles/web/cordis.patch.yml`；显式设置 `DSH_HOME` 时改用 `$DSH_HOME/profiles/web/cordis.patch.yml`。CLI/Web profile 独立于 Desktop，不会自动沿用桌面插件配置。
 
@@ -313,7 +332,7 @@ macOS 使用 POSIX 路径，例如（Linux 把 `/Users/<你的用户名>` 换为
 | `dsh plugin` 报 `managed exclusively by the Electron application` | Desktop profile 由 Electron 应用独管 | 直接编辑该 profile 的 `cordis.patch.yml`，不要在桌面 profile 上使用 CLI 插件命令 |
 | PluginManager 里出现两个插件 | 早期内部候选遗留了 `dsh-grok-search-recovery` | 停用并移除旧包，完整重启后只保留 `dsh-grok-search` |
 | 停止后想重新接管却找不到按钮 | Beta 没有恢复按钮 | 完整退出 DSH，删除 profile 下的 `control-intent.records`，再启动 |
-| 升级 DSH 后插件无法加载 | 新版本尚未验证 | 按 [support-matrix.json](./support-matrix.json) 检查对应入口的已验证版本；不要把其他平台的结果平移过来 |
+| 升级 DSH 后搜索悄悄回到 DSH 自带搜索，设置页的「Grok 搜索接管」可能消失 | 新版 DSH 不在插件的版本范围内，DSH 启动时跳过了本插件；插件没有加载，也就无法报错 | 查看 [support-matrix.json](./support-matrix.json) 或 Release 说明；等插件发布支持该版本的新版本，或先不升级 DSH。不要用 `dsh plugin allow-version` 强制放行 |
 | 卸载后仍看到控制记录 | 卸载有意不清理 profile 记录 | 完全退出 DSH 后可手动删除 `control-intent.records` |
 
 更多实现细节和验证方法见[开发与验证](https://github.com/Lain-in-coding/dsh-grok-search/blob/main/docs/开发与验证.md)。
@@ -333,9 +352,9 @@ macOS 使用 POSIX 路径，例如（Linux 把 `/Users/<你的用户名>` 换为
 
 ## 已知限制
 
-- Windows x64 Desktop 目标矩阵已通过；Linux x64 CLI/Web 已通过安装、查询、配置重载无回退、设置停止 RPC、PluginManager 停用/重启/重新启用/移除、canonical 派发计数与进程退出。Web 设置页的浏览器 DOM 仍未验证。macOS Apple Silicon Desktop 尚未在真机或 ARM runner 上运行，本候选仍未达到全部平台发布门槛。
-- 支持入口为 Windows x64 Desktop、macOS Apple Silicon Desktop、Linux x64 CLI/Web；不承诺 macOS Intel Desktop 或官方 Linux Desktop。
-- 各入口版本按 [support-matrix.json](./support-matrix.json) 的滚动矩阵单独验证，Grok 基线为 `0.1.26`。
+- 只承诺[支持范围](#支持范围)表中列出的系统、入口和 DSH 版本组合。macOS Intel、Windows ARM、Windows/macOS 上的 CLI/Web 和 `0.2.2-alpha.2` 都不在范围内。
+- DSH 升级到版本范围以外时，宿主启动时会跳过本插件，搜索按原设置回到 DSH 自带搜索。插件此时没有加载，无法主动提示。
+- Grok 基线为 `0.1.26`。
 - 插件不自动安装 Grok，不申请 Key，不修改正式 profile、共享配置或凭据。
 - 不支持源码 live HMR。代码升级、停用、移除后都需要完整重启 DSH。
 - 跨资源提交崩溃、完整在途事务和官方联网 `fetch` 验收未覆盖。
@@ -346,22 +365,27 @@ macOS 使用 POSIX 路径，例如（Linux 把 `/Users/<你的用户名>` 换为
 
 ## 本版验证了什么
 
-截至 2026-10-28，Windows x64 Desktop `0.2.1-rc.2`/`rc.3` 的隔离门禁，以及 Linux x64 CLI/Web `0.2.1-rc.3`/`rc.4` 的安装、查询和显式停止门禁已通过。macOS Apple Silicon 尚未运行宿主门禁，不能将当前包称为三平台验收完成。
+发布前，[支持范围](#支持范围)表中的每个组合都用同一个插件包通过了自动化门禁。门禁使用隔离的 DSH 数据目录和临时 profile，不读取正式 profile、共享 Grok 配置或真实凭据；宿主是官方 DSH 程序，Grok 是真实的 `grok-search-rs` `0.1.26` 程序，它的上游请求由本机模拟服务接收。Windows 另外用真实凭据做了 Grok 上游查询。Linux 门禁在 WSL Ubuntu 22.04 中运行。
 
-- 所有已运行门禁均使用同一个候选 tarball；平台和入口的状态以 [support-matrix.json](./support-matrix.json) 为准。
-- Windows Desktop：搜索、网页抓取、普通聊天、完整重启和配置重载，owner 存活时真实设置页点击「停止接管并恢复原搜索」。
-- Windows Desktop：停用后五个组件离场、记录不被改写、PluginManager 操作和重启清理、真实 Grok `0.1.26` 查询及 canonical 原始官方搜索派发计数。
-- Windows Desktop M0-04：多 Session、preset、PTC、配置重载、重启重连和预算矩阵；其中路由计数使用夹具。
-- Linux CLI/Web：真实 Grok `0.1.26` Linux x64 二进制 MCP 握手、搜索接管/停止恢复、配置重载过渡无官方回退、PluginManager 停用与移除生命周期；官方 provider 请求由本机 loopback stub 接收。
-- 白名单打包、复打包哈希一致、依赖审计与敏感信息扫描。
+- 干净安装、安装包逐文件核对和完整重启。
+- 搜索交给 Grok，网页抓取、普通聊天和已有依赖保持不变。
+- 配置重载过渡期间不回退官方搜索。
+- owner 存活时在真实设置页点击「停止接管并恢复原搜索」，并核验原搜索路由、`fetchProvider` 和已有依赖恢复。
+- PluginManager 安装、启用、停用、移除和重启后的清理。
+- 从 DSH Session 事件统计原始官方搜索派发次数。
+- Desktop 另外覆盖多 Session、preset、PTC、重启重连和预算矩阵，其中路由计数使用夹具。
+- 发布包白名单、两次打包哈希一致、依赖审计和敏感信息扫描。
 
-仍属于夹具、或未接线、或未覆盖的项，都在[开发与验证](https://github.com/Lain-in-coding/dsh-grok-search/blob/main/docs/开发与验证.md)里逐项列出。宿主没有 release 专属完成回执；释放使用复合证据判定，不冒充宿主专属回执。本版不等于稳定版，也不等于完整 B2/M0 通过。
+每次运行的 runId 与证据摘要记录在 [CHANGELOG](https://github.com/Lain-in-coding/dsh-grok-search/blob/main/CHANGELOG.md) 和 GitHub Release 说明里。
+
+仍属于夹具、或未接线、或未覆盖的项，都在[开发与验证](https://github.com/Lain-in-coding/dsh-grok-search/blob/main/docs/开发与验证.md)里逐项列出。宿主没有 release 专属完成回执；释放使用复合证据判定，不冒充宿主专属回执。本版是公开 Beta，不等于稳定版。
 
 ## 反馈
 
 请在 [GitHub Issues](https://github.com/Lain-in-coding/dsh-grok-search/issues) 反馈，并附上：
 
 - DSH Desktop/runtime 版本与 Grok 版本。
+- 系统与入口（Desktop 或 CLI/Web）。
 - 设置页显示的原始错误码和错误文本。
 - 可复现的最短步骤。
 - 插件版本 `0.1.0-beta.1`。

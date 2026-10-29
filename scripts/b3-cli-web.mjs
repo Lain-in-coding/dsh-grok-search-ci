@@ -37,6 +37,7 @@ const GROK_VERSION = '0.1.26';
 const GROK_LINUX_X64_SHA256 = 'e8ced45392738bac691e41de9793c7941ed7f56c7e53697f8084b2e9ef4acf86';
 const GROK_TEST_API_KEY = 'dsh-grok-search-local-test-key';
 const VERSIONS = Object.freeze({
+  rc2: '0.2.1-rc.2',
   rc3: '0.2.1-rc.3',
   rc4: '0.2.1-rc.4',
 });
@@ -45,7 +46,7 @@ const CASES = new Set(['smoke', 'stop', 'full']);
 function usage() {
   return [
     'Usage:',
-    '  node scripts/b3-cli-web.mjs --dsh-cli <bin.js> --dsh-version <rc3|rc4>',
+    '  node scripts/b3-cli-web.mjs --dsh-cli <bin.js> --dsh-version <rc2|rc3|rc4>',
     '    --product-package <tgz> --grok-linux-archive <tar.gz> --case <smoke|stop|full>',
     '    --pnpm-entry <pnpm.cjs> --pnpm-store <path> --pnpm-cache <path>',
   ].join('\n');
@@ -85,8 +86,8 @@ function parseArgs(argv) {
   if (options.case === 'full' && !options.browserExecutable) {
     throw new Error(`--browser-executable is required for the full case.\n${usage()}`);
   }
-  if (!VERSIONS[options.dshVersion]) {
-    throw new Error(`Unsupported --dsh-version ${JSON.stringify(options.dshVersion)}; expected rc3 or rc4.`);
+  if (!Object.hasOwn(VERSIONS, options.dshVersion)) {
+    throw new Error(`Unsupported --dsh-version ${JSON.stringify(options.dshVersion)}; expected rc2, rc3 or rc4.`);
   }
   if (!CASES.has(options.case)) {
     throw new Error(`Unsupported --case ${JSON.stringify(options.case)}; expected smoke, stop or full.`);
