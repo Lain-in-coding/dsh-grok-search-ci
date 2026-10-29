@@ -59,6 +59,15 @@ jobs:
           node-version: "24"
       - name: Confirm Apple Silicon runner
         run: test "$(uname -m)" = arm64
+      - name: Use Simplified Chinese as the runner UI language
+        shell: bash
+        run: |
+          set -euo pipefail
+          # DSH Desktop picks its UI language from the macOS preferred languages, not LANG or --lang.
+          # The hosted VM defaults to English; the UI gates read the Chinese interface Chinese users see.
+          defaults write -g AppleLanguages -array zh-Hans en-US
+          defaults write -g AppleLocale zh_CN
+          test "$(defaults read -g AppleLanguages | sed -n 2p | tr -d ' ,"')" = "zh-Hans"
       - name: Prepare isolated Grok MCP and local Responses stub
         shell: bash
         run: |
@@ -189,6 +198,7 @@ jobs:
           name: macos-beta-evidence
           path: |
             artifacts/b2-*/**/summary.json
+            artifacts/b2-plugin-manager-desktop/**/*-ui.json
             artifacts/internal-candidate-real/**/summary.json
             artifacts/macos-grok-protocol/receipt.json
           if-no-files-found: ignore
@@ -246,6 +256,7 @@ jobs:
           name: macos-beta-final-evidence
           path: |
             artifacts/b2-*/**/summary.json
+            artifacts/b2-plugin-manager-desktop/**/*-ui.json
             artifacts/internal-candidate-real/**/summary.json
             artifacts/macos-grok-protocol/receipt.json
             ${{ runner.temp }}/grok/stub-receipt.json
