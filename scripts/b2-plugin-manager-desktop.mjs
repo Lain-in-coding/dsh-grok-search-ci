@@ -183,6 +183,7 @@ async function pluginManagerRendererSnapshot(host) {
   const renderer = await connectRenderer(host.debuggerPort);
   try {
     await renderer.send('Page.bringToFront');
+    await renderer.send('Emulation.setFocusEmulationEnabled', { enabled: true });
     // Sidebar navigation can preserve the current package detail. Return via
     // the host's own breadcrumb before expecting the installed-list heading.
     await renderer.evaluate(`(() => {
@@ -341,6 +342,7 @@ async function settingsDialogRendererFlow(host) {
     // RPC write outside the view does not wake it; foreground the isolated
     // test page exactly as a user returning to the detail page would.
     await renderer.send('Page.bringToFront');
+    await renderer.send('Emulation.setFocusEmulationEnabled', { enabled: true });
     await waitForRenderer(renderer, current => current.evaluate(`document.visibilityState === 'visible'
       && ${q('#cfgTag')}?.textContent === 'Grok 共享配置'`));
     check('open Grok card', await click('.row[data-id=grok] .row-main'));
@@ -817,6 +819,7 @@ async function firstUseConfigure(host, stub) {
   })()`;
   try {
     await renderer.send('Page.bringToFront');
+    await renderer.send('Emulation.setFocusEmulationEnabled', { enabled: true });
     const open = await renderer.evaluate(`(() => {
       const item=${q('.row[data-id=grok] .row-main')}; if (!item) return false; item.click(); return true;
     })()`);
@@ -900,6 +903,10 @@ async function productionDiagnosticsFlow(host, stub) {
   };
   try {
     await renderer.send('Page.bringToFront');
+    // Test-only CDP focus emulation prevents OS foreground changes from
+    // suspending the page's legitimate visible-only configuration polling.
+    // No product code, document property or host runtime is patched.
+    await renderer.send('Emulation.setFocusEmulationEnabled', { enabled: true });
     await renderer.send('Emulation.setDeviceMetricsOverride', {
       width: 1360, height: 1000, deviceScaleFactor: 1, mobile: false,
     });
@@ -923,11 +930,26 @@ async function productionDiagnosticsFlow(host, stub) {
       && ${q('#rowsSupp .row')}?.dataset.id==='exa'`), { timeoutMs: 60000 });
     stub.state.mode = 'partial';
     const before = stub.requests.length;
+    // Capture the transient class inside the page at mutation time. A second
+    // CDP round-trip can arrive after a reduced-motion test has completed and
+    // legitimately cleared its flash; do not treat that as a missing effect.
+    await renderer.evaluate(`(() => {
+      const row=${q('.row[data-id=tinyfish]')};
+      if (!row) throw new Error('TinyFish diagnostic row is absent.');
+      window.__dsgDiagnosticEvidence={faultFlash:false,
+        reducedMotion:matchMedia('(prefers-reduced-motion: reduce)').matches};
+      window.__dsgDiagnosticObserver=new MutationObserver(() => {
+        if (row.classList.contains('is-fault-flash')) window.__dsgDiagnosticEvidence.faultFlash=true;
+      });
+      window.__dsgDiagnosticObserver.observe(row,{attributes:true,attributeFilter:['class']});
+      return true;
+    })()`);
     await runTest();
-    await waitForRenderer(renderer, current => current.evaluate(`${q('.row[data-id=tinyfish]')}
-      ?.classList.contains('is-fault-flash')`), { timeoutMs: 60000 });
-    check('real-response-triggers-transient-error-border',
-      await renderer.evaluate(`${q('.row[data-id=tinyfish]')}?.classList.contains('is-fault-flash')`));
+    const flash = await waitForRenderer(renderer, current => current.evaluate(
+      `window.__dsgDiagnosticEvidence?.faultFlash ? window.__dsgDiagnosticEvidence : null`),
+    { timeoutMs: 60000 });
+    check('real-response-triggers-transient-error-border', flash.faultFlash);
+    await renderer.evaluate(`window.__dsgDiagnosticObserver?.disconnect(); true`);
     await completed();
     const partial = await snapshotUi(), calls = stub.requests.slice(before);
     check('all-four-sources-tested-after-first-source-success',
@@ -978,6 +1000,8 @@ async function productionDiagnosticsFlow(host, stub) {
       { flag: 'wx' });
     const evidence = { passed: tests.length, failed: 0, tests, partial, allFailed: failed,
       transientErrorBorderObserved: true, syntheticKeysOnly: true, upstream: 'loopback',
+      testOnlyCdpFocusEmulation: true,
+      reducedMotionObserved: flash.reducedMotion,
       realPaidProviderValidated: false, ordinarySearchRequests: ordinaryRequests,
       exceptions: renderer.exceptions };
     writeJson(join(directory, currentVersion + '-diagnostics-flow.json'), safe(evidence));
@@ -993,6 +1017,10 @@ async function productionDiagnosticsFlow(host, stub) {
     throw error;
   } finally {
     stub.state.mode = 'ok';
+    await renderer.evaluate(`(() => {
+      window.__dsgDiagnosticObserver?.disconnect();
+      delete window.__dsgDiagnosticObserver; delete window.__dsgDiagnosticEvidence; return true;
+    })()`).catch(() => {});
     renderer.close();
   }
 }
