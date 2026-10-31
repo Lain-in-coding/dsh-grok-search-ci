@@ -32,8 +32,14 @@ export async function connectRenderer(port, { timeoutMs = 20_000, requestTimeout
   let serial = 0;
   const pending = new Map();
   const consoleEntries = [];
+  const exceptions = [];
   socket.addEventListener('message', event => {
     const message = JSON.parse(String(event.data));
+    if (message.method === 'Runtime.exceptionThrown') {
+      const detail = message.params.exceptionDetails;
+      exceptions.push({ text: detail.text, description: detail.exception?.description,
+        url: detail.url, lineNumber: detail.lineNumber });
+    }
     if (message.method === 'Runtime.consoleAPICalled') {
       consoleEntries.push({
         type: message.params.type,
@@ -79,6 +85,7 @@ export async function connectRenderer(port, { timeoutMs = 20_000, requestTimeout
     send,
     evaluate,
     consoleEntries,
+    exceptions,
     close() { socket.close(); },
   });
 }

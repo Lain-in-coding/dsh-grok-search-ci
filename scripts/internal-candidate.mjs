@@ -213,9 +213,18 @@ async function verifyHost(runtime, root, env) {
 
 async function verifyRealHost(runtime, root, env) {
   const host = startHost(runtime, root, env);
+  let managedPid = null;
   await caseResult('real-grok-native-tool-query', runtime.app.version, async record => {
     const ready = await host.event('ready');
     assert.deepEqual(ready.failed, []); assert.deepEqual(ready.pending, []);
+    const deadline = Date.now() + 30000;
+    let program = ready.productProgram;
+    while (program?.phase !== 'ready' && Date.now() < deadline) {
+      if (program?.phase === 'error') throw new Error('Isolated Grok preparation failed: ' + JSON.stringify(program.error));
+      await new Promise(resolve => setTimeout(resolve, 100));
+      program = (await host.request('snapshot')).productProgram;
+    }
+    assert.equal(program?.phase, 'ready', 'Isolated Grok must be ready before the native tool query.');
     const auth = await session(host);
     const model = await turn(host, auth, 'search', 'real-grok-query');
     // 不留真实回答正文，只保存可核查的路由、来源 URL 与进程事实。
@@ -225,12 +234,27 @@ async function verifyRealHost(runtime, root, env) {
       calls: model.calls, core: model.core, sdk: model.sdk, runtimeWeb: model.runtimeWeb });
     assert.equal(model.model.isError, false); assert.ok(urls.length > 0);
     assert.equal(model.calls.original, 0); assert.equal(model.sdk.version, '2.4.0'); assert.equal(model.sdk.suppliedByPlugin, true);
-    assert.equal(model.core.lastDiagnostic.serverVersion, '0.1.26'); reaped(model);
+    assert.equal(model.core.lastDiagnostic.serverVersion, '0.1.26');
+    assert.equal(model.core.lastDiagnostic.exited, false, 'A successful query keeps the managed MCP session.');
+    assert.equal(model.core.session?.connected, true);
+    assert.equal(model.core.session?.active, false);
+    assert.equal(model.core.running, 0); assert.equal(model.core.queued, 0);
+    assert.equal(model.core.faulted, 0); assert.equal(model.core.routeExecutor.running, 0);
+    managedPid = model.core.lastDiagnostic.childPid;
+    assert.ok(Number.isSafeInteger(managedPid));
+    process.kill(managedPid, 0);
     const fetchTurn = await turn(host, auth, 'fetch', 'real-profile-fetch-stub');
     record.observations.push({ stage: 'fetch-control', model: { completed: fetchTurn.model.completed, isError: fetchTurn.model.isError }, runtimeWeb: fetchTurn.runtimeWeb });
     assert.equal(fetchTurn.model.isError, false); assert.equal(fetchTurn.runtimeWeb.fetchProviderId, 'candidate-fetch');
   });
   await host.close();
+  await caseResult('real-grok-reaped-after-host-close', runtime.app.version, async record => {
+    assert.equal(host.state.exitCode, 0); assert.equal(host.state.timedOut, false);
+    assert.ok(Number.isSafeInteger(managedPid));
+    assert.throws(() => process.kill(managedPid, 0), error => error.code === 'ESRCH');
+    record.observations.push({ stage: 'owned-process-exit', childPid: managedPid,
+      hostExitCode: host.state.exitCode, orphanProgram: false });
+  });
 }
 
 try {

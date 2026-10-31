@@ -33,12 +33,13 @@ export function projectPublicSnapshot(current, disposed = false) {
   };
 }
 
-export async function apply(ctx) {
+export async function apply(ctx, { counterSnapshot = null } = {}) {
   const store = createProductStore(ctx);
   let disposed = false;
   let routeVerifier = null;
   let task = null;
   let releaseTask = null;
+  let acquired = false;
   ctx.inject(['grokSearchRouteVerifier'], () => { routeVerifier = ctx.get('grokSearchRouteVerifier'); });
   let releaseOperationId = null;
   const state = {
@@ -93,7 +94,10 @@ export async function apply(ctx) {
     acquiredSelection: [...selection.bundles],
     acquisition,
     lease,
-    priorIntent: prior ? structuredClone(prior) : null,
+    // Every complete prior revision remains in the immutable store. Keep one
+    // immediate evidence object here instead of recursively nesting all toggles.
+    priorIntent: prior ? Object.fromEntries(Object.entries(structuredClone(prior))
+      .map(([key, value]) => [key, key === 'priorIntent' ? null : value])) : null,
     release: null,
     ...(prior?.migration ? { migration: structuredClone(prior.migration) } : {}),
   });
@@ -113,7 +117,8 @@ export async function apply(ctx) {
       }
       let existing = store.read();
       setRecord(existing);
-      if (existing?.intent.policy === 'released') {
+      if (existing?.intent.policy === 'released' && (acquired || !existing.intent.releaseCompletion
+        && !existing.intent.recovery)) {
         const completion = existing.intent.releaseCompletion;
         state.phase = 'released';
         state.releaseOutcome = completion ? { kind: 'released', recordCommitted: false,
@@ -123,14 +128,22 @@ export async function apply(ctx) {
         state.error = null;
         return snapshot();
       }
-      if (existing && (existing.intent.pause?.confirmed === true || existing.intent.release !== null)) {
+      if (existing && acquired && (existing.intent.pause?.confirmed === true || existing.intent.release !== null)) {
         state.phase = 'stopped';
         state.error = null;
         return snapshot();
       }
       const currentLease = createLease(ctx);
       const currentAcquisition = createAcquisition(ctx);
-      if (existing) {
+      const reactivating = existing?.intent.policy === 'released' || existing?.intent.pause?.confirmed === true;
+      if (reactivating) {
+        existing = store.compareAndSwap({ expectedRevision: existing.revision,
+          intent: requiredIntent(selection, currentAcquisition, currentLease, existing.intent) });
+        setRecord(existing);
+        state.releaseOutcome = null;
+        state.releaseOperationId = null;
+        releaseOperationId = null;
+      } else if (existing) {
         const recorded = existing.intent.acquisition;
         const recordedPresent = recorded && Object.hasOwn(recorded, 'authorSearchProviderPresent')
           ? recorded.authorSearchProviderPresent : recorded?.authorSearchProvider !== null;
@@ -155,6 +168,7 @@ export async function apply(ctx) {
       if (!core) throw new ControlRecordError('CONTROL_RELEASE_CORE_REQUIRED',
         'The query core must be loaded before the product owner can take over search.');
       const takeover = await takeOverAuthorRoute(ctx, existing.intent.acquisition, existing.intent.lease);
+      acquired = true;
       state.phase = 'required';
       state.error = null;
       state.routeChanged = takeover.routeChanged;
@@ -166,7 +180,7 @@ export async function apply(ctx) {
     }).finally(() => { task = null; });
     return task;
   };
-  const stop = reason => {
+  const stop = (reason, { unloading = false } = {}) => {
     if (disposed) return Promise.reject(new ControlRecordError('CONTROL_OWNER_ABSENT', 'The product owner is absent.'));
     if (releaseTask) return releaseTask;
     const stopFailure = error => {
@@ -194,9 +208,10 @@ export async function apply(ctx) {
       state.releaseOperationId = releaseOperationId;
       priorIntent = before.intent.policy === 'required' ? before.intent : before.intent.priorIntent;
       const core = ctx.get('grokSearchCore');
-      counterBaseline = originalSearchCounter(ctx).calls;
+      counterBaseline = (counterSnapshot ? counterSnapshot() : originalSearchCounter(ctx)).calls;
       owner = createLease(ctx);
       controller = createProductReleaseController({ ctx, priorIntent, core, routeVerifier,
+        ...(unloading && counterSnapshot ? { counterSnapshot } : {}),
         onState: phase => { state.phase = phase; } });
     } catch (error) {
       stopFailure(error);

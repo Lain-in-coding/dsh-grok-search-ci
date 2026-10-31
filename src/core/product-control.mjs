@@ -134,24 +134,31 @@ export function dependenciesPreserved(ctx, snapshot) {
   return isDeepStrictEqual(webEntry(ctx).options.inject ?? null, snapshot ?? null);
 }
 
-export function originalSearchCounter(ctx) {
-  const counter = ctx.get('grokSearchOriginalSearchCounter');
-  const value = typeof counter === 'function' ? counter() : counter?.snapshot?.();
+/**
+ * Normalize every counter shape into one JSON-safe snapshot. Route receipts are
+ * persisted in CAS records, which reject undefined members; a host counter that
+ * reports only `{ calls }` must still yield a complete, serializable value.
+ */
+export function normalizeCounterSnapshot(value, fallbackSource = 'grokSearchOriginalSearchCounter') {
   const calls = Number.isSafeInteger(value) ? value
     : Number.isSafeInteger(value?.calls) ? value.calls
       : Number.isSafeInteger(value?.originalSearchCalls) ? value.originalSearchCalls
         : null;
-  if (calls !== null && calls >= 0) {
-    return {
-      calls,
-      source: typeof value?.source === 'string' && value.source.length > 0
-        ? value.source : 'grokSearchOriginalSearchCounter',
-      adapterVersion: Number.isSafeInteger(value?.adapterVersion) && value.adapterVersion > 0
-        ? value.adapterVersion : 1,
-    };
+  if (calls === null || calls < 0) {
+    throw new ControlRecordError('CONTROL_ROUTE_COUNTER_REQUIRED',
+      'The Host must provide a verified original-search counter before route correction.');
   }
-  throw new ControlRecordError('CONTROL_ROUTE_COUNTER_REQUIRED',
-    'The Host must provide a verified original-search counter before route correction.');
+  return {
+    calls,
+    source: typeof value?.source === 'string' && value.source.length > 0 ? value.source : fallbackSource,
+    adapterVersion: Number.isSafeInteger(value?.adapterVersion) && value.adapterVersion > 0
+      ? value.adapterVersion : 1,
+  };
+}
+
+export function originalSearchCounter(ctx) {
+  const counter = ctx.get('grokSearchOriginalSearchCounter');
+  return normalizeCounterSnapshot(typeof counter === 'function' ? counter() : counter?.snapshot?.());
 }
 
 export function originalSearchCalls(ctx) {
@@ -161,14 +168,14 @@ export function originalSearchCalls(ctx) {
 export function routeReceipt(ctx, { authorSearchProvider: expectedSearch = authorSearchProvider(ctx),
   authorFetchProvider: expectedFetch = authorFetchProvider(ctx), expectedInjectSha256 = null,
   dependenciesPreserved: dependencyOverride = null, routeChanged = false,
-  counterBaseline = null } = {}) {
+  counterBaseline = null, counterSnapshot = null } = {}) {
   const entry = webEntry(ctx);
   const actualSearchProvider = effectiveSearchProvider(entry);
   const actualFetchProvider = effectiveFetchProvider(entry);
   const deps = typeof dependencyOverride === 'boolean' ? dependencyOverride
     : expectedInjectSha256 === null ? null
       : authorInjectSha256(ctx) === expectedInjectSha256;
-  const counter = originalSearchCounter(ctx);
+  const counter = counterSnapshot ? normalizeCounterSnapshot(counterSnapshot) : originalSearchCounter(ctx);
   if (counterBaseline !== null && (!Number.isSafeInteger(counterBaseline) || counterBaseline < 0
     || counter.calls < counterBaseline)) {
     throw new ControlRecordError('CONTROL_ROUTE_COUNTER_REGRESSION',
@@ -301,7 +308,7 @@ export async function restoreAuthorRoute(ctx, priorIntent) {
 }
 
 export function createProductReleaseController({ ctx, priorIntent, core, routeVerifier = null, onState = () => {},
-  disposeTimeoutMs = 2_000 }) {
+  disposeTimeoutMs = 2_000, counterSnapshot = null }) {
   if (!core || !core.releaseBarrier || typeof core.dispose !== 'function') {
     throw new ControlRecordError('CONTROL_RELEASE_CORE_REQUIRED',
       'The query core and its release barrier must be present before an explicit release.');
@@ -314,10 +321,14 @@ export function createProductReleaseController({ ctx, priorIntent, core, routeVe
   let disposeTask = null;
   let routeBefore = null;
   const barrier = core.releaseBarrier;
+  // Native bundle teardown disposes children concurrently. Hold the public
+  // loader reference before invalidation; a drained child context no longer
+  // resolves injected services, even while the root is awaiting this release.
+  const routeContext = counterSnapshot ? { loader: ctx.loader } : ctx;
   return {
     invalidate({ reason }) {
       if (!stopping) {
-        try { routeBefore = effectiveSearchProvider(webEntry(ctx)); } catch { routeBefore = null; }
+        try { routeBefore = effectiveSearchProvider(webEntry(routeContext)); } catch { routeBefore = null; }
         barrier.invalidate({ reason });
         stopping = true;
         onState('stopping');
@@ -343,7 +354,7 @@ export function createProductReleaseController({ ctx, priorIntent, core, routeVe
       return { settled: true, remaining: 0 };
     },
     async restore() {
-      const restored = await restoreAuthorRoute(ctx, priorIntent);
+      const restored = await restoreAuthorRoute(routeContext, priorIntent);
       const author = priorIntent?.acquisition?.authorSearchProvider ?? null;
       return { ...restored, routeBefore,
         routeChanged: restored.routeChanged || (routeBefore === PRODUCT_PROVIDER_ID && restored.actualSearchProvider === author) };
@@ -359,7 +370,7 @@ export function createProductReleaseController({ ctx, priorIntent, core, routeVe
         ? acquisition.authorSearchProvider : authorSearchProvider(ctx);
       const recordedFetch = Object.hasOwn(acquisition, 'authorFetchProvider')
         ? acquisition.authorFetchProvider : authorFetchProvider(ctx);
-      const verifier = routeVerifier ?? ctx.get('grokSearchRouteVerifier');
+      const verifier = counterSnapshot ? null : routeVerifier ?? ctx.get('grokSearchRouteVerifier');
       if (typeof verifier?.verify === 'function') {
         return verifier.verify({
           authorSearchProvider: recordedSearch,
@@ -369,11 +380,12 @@ export function createProductReleaseController({ ctx, priorIntent, core, routeVe
           routeChanged, counterBaseline,
         });
       }
-      return routeReceipt(ctx, {
+      return routeReceipt(routeContext, {
         authorSearchProvider: recordedSearch,
         authorFetchProvider: recordedFetch,
         expectedInjectSha256: injectBaseline,
         routeChanged, counterBaseline,
+        ...(counterSnapshot ? { counterSnapshot: counterSnapshot() } : {}),
       });
     },
   };

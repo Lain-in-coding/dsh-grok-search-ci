@@ -2,399 +2,203 @@
 
 # dsh-grok-search
 
-**用你自己的 Grok 接管 DeepSeek Harness 的内置网页搜索。**
+**把 DeepSeek Harness 的 `web_search` 交给 Grok，并在同一页管理补充来源。**
 
-[![npm next](https://img.shields.io/npm/v/dsh-grok-search/next?logo=npm&label=npm%20next)](https://www.npmjs.com/package/dsh-grok-search/v/0.1.0-beta.1)
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Lain-in-coding/dsh-grok-search/blob/main/LICENSE)
-[![DSH 0.2.1 rc.2 · rc.3 · rc.4](https://img.shields.io/badge/DSH-0.2.1%20rc.2%20%C2%B7%20rc.3%20%C2%B7%20rc.4-4F46E5)](https://github.com/Lain-in-coding/dsh-grok-search#支持范围)
-[![Windows · macOS · Linux](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078D4)](https://github.com/Lain-in-coding/dsh-grok-search#支持范围)
+[![npm next](https://img.shields.io/npm/v/dsh-grok-search/next?logo=npm&label=npm%20next)](https://www.npmjs.com/package/dsh-grok-search)
+[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![DSH](https://img.shields.io/badge/DSH-0.2.1%20rc.2%20%7C%20rc.3%20%7C%20rc.4-4F46E5)](./support-matrix.json)
 
 </div>
 
-DeepSeek Harness（DSH）的插件。启用后，模型仍然调用官方 `web_search`，实际查询交给你自己准备并配置的 [grok-search-rs](https://github.com/Episkey-G/GrokSearch-rs)（Grok）；原本的 `fetchProvider`、已有依赖和普通聊天保持不变。
+`dsh-grok-search` 是一个单一聚合插件。安装后由设置页自动发现本机已有的
+`grok-search-rs`；确实找不到时，只在插件自己的 profile 缓存中准备经过校验的
+平台程序。你不需要编辑 `cordis.patch.yml`，也不需要填写程序或配置路径。
+支持宿主的默认热重载开启时，安装、启用与停用即时生效；关闭热重载的宿主
+会明确返回「需要重启」，插件不会替你改宿主配置或自动重启。
 
-这是 `0.1.0-beta.1` 公开 Beta，不是稳定版。整个插件只有一个包 `dsh-grok-search`，搜索、接管、设置、路由核验与恢复都在同一个 bundle 内。
+当前为待公开发布的 `0.1.0-beta.1` 候选；下面的 npm 安装入口将在正式发布后
+生效。尚未发布时，请使用维护者提供的同版本 `.tgz`，不要把 npm 找不到包
+误认为安装故障。
 
-> 搜索失败会明确报错，**不会自动切回 DSH 官方搜索**。这样你不会在不知情时产生另一种调用或费用。
+## 你会得到什么
 
-## 为什么用它
-
-| | DSH 内置 `deepseek-official` | 本插件 |
-|---|---|---|
-| 搜索来源 | DSH 自带的 DeepSeek 搜索通道 | 你安装并配置的 Grok `0.1.26` |
-| 需要的凭据 | DeepSeek 官方搜索所需凭据 | 你自己的 xAI API Key 或 Grok OAuth 配置 |
-| 搜索失败时 | 由官方通道返回错误 | 明确报错，保留原 `fetchProvider`，不回退官方搜索 |
-| 普通聊天 | 正常 | 正常 |
-| 网页抓取 | 使用原来的 `fetchProvider` | 继续使用原来的 `fetchProvider` |
-| 数据落点 | 按 DSH 官方策略 | 插件自身不联网；Grok 读取你的配置并连接其上游 |
-| 插件写入 | 不新增插件控制记录 | 只在所用 profile 写入自己的 `control-intent.records` |
-
-它适合：
-
-- 已经在用 Grok，希望 DSH 的网页搜索也走自己的 Grok 和额度。
-- 需要明确知道搜索什么时候失败，不想悄悄回退到另一个搜索来源。
-- 想保留现有网页抓取和普通聊天，只替换搜索这一条链。
-
-它不适合：
-
-- 不想安装、配置 Grok 的用户。
-- 正在使用[支持范围](#支持范围)表外的 DSH 版本或系统组合，例如 `0.2.2-alpha.2`、macOS Intel、Windows ARM 或官方尚未提供的 Linux Desktop。
-- 希望插件自动申请 Key、自动安装 Grok 或修改共享 Grok 配置的用户。
-
-## 快速开始
-
-开始前先在[支持范围](#支持范围)表里确认你的系统、入口和 DSH 版本。
-
-1. **准备 Grok `0.1.26`**：按当前系统安装程序，配置凭据，并确认所用的 `grok-search-rs --version` 输出 `0.1.26`。
-2. **安装插件**：Desktop 用「插件」→「添加插件」；Linux CLI/Web 用 `dsh plugin --profile web add`。安装 `dsh-grok-search@0.1.0-beta.1`。
-3. **填写程序路径**：在 Desktop 的 `desktop` profile，或 CLI/Web 使用的 profile 的 `cordis.patch.yml` 中，为 `grok-search-core` 写入 Grok 原生程序的绝对路径；`configPath` 可以按需填写。
-4. **完整重启 DSH**：退出整个 DSH，再重新启动；只关窗口不算完整重启。
-
-启动后，设置页里的「Grok 搜索接管」应显示「正在接管」。然后新建对话发起一次联网搜索，并确认普通网页抓取和聊天仍然正常。
-
-更细的步骤、截图和验收方法见下方[安装与配置](#安装与配置)。
+- 一个插件、一个安装包：搜索接管、恢复、设置和诊断都在
+  `dsh-grok-search` 内，没有需要单独安装的 recovery 插件。
+- `DeepSeek Harness → Grok Search RS → Grok / Tavily / Exa / TinyFish /
+  Firecrawl` 的动态路由界面；Grok 和每个补充来源都能单独开关。
+- Grok 出错时，按你设置的顺序静默尝试可用补充来源；全部不可用才明确报错，
+  不会偷偷回到 DeepSeek 官方搜索。
+- 配置编辑直接写入同一份 Grok `config.toml`。保留注释和未知字段，并用
+  revision/CAS 防止两个窗口互相覆盖。
+- 插件开关是唯一的接管开关：关闭后即时恢复官方搜索，重新打开后即时接管。
+- 一个 DSH 实例串行复用一个受管 MCP 会话，空闲五分钟后退出；不会每次搜索
+  无限累积后台 Grok 进程。
 
 ## 支持范围
 
-| 系统 | 入口 | 已验证的 DSH 版本 |
-|---|---|---|
-| Windows x64 | Desktop | `0.2.1-rc.2`、`0.2.1-rc.3` |
-| macOS Apple Silicon | Desktop | `0.2.1-rc.2`、`0.2.1-rc.3` |
-| Linux x64 | CLI/Web | `0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4` |
-
-- 表里没有的组合可能装得上，但没有验证，也不承诺支持，例如 macOS Intel、Windows ARM，以及 Windows 或 macOS 上的 CLI/Web。官方没有 Linux Desktop。
-- Windows 和 macOS 推荐使用 Desktop。
-- `0.2.2-alpha.2` 暂不支持，安装时会被 DSH 拒绝。
-- 所有系统和入口共用同一个插件包，包里只有一份版本范围，DSH 在安装时和每次启动时都会检查它。版本范围是各入口版本的并集，例如其中的 `rc.4` 只对 Linux CLI/Web 验证过，不代表 Desktop `rc.4` 已验证。
-- 查看自己的 DSH 版本：Desktop 和 Web 点侧栏底部「设置」，在「通用设置」里看「当前版本」；CLI 运行 `dsh --version`。
-- Grok 基线为 `grok-search-rs` `0.1.26`。npm `next` 标签和 GitHub Pre-release 提供的是同一个 `.tgz`。
-
-**升级 DSH 前先确认新版本已经在上表里。** DSH 发布新版本后，要等本插件发布把它加入版本范围的新版本才能使用。在那之前，DSH 启动时会跳过本插件，搜索按你原来的设置回到 DSH 自带搜索，界面可能没有任何提示。不要用 `dsh plugin allow-version` 强制放行未验证的版本。
-
-每个入口至少保留最新可用版本和一个前一已验证版本；版本数据以 [support-matrix.json](./support-matrix.json) 为准。
-
-## 安装与配置
-
-### 1. 准备 Grok `0.1.26`
-
-插件只启动你已有的外部程序，不会下载或安装 Grok。先确认 DSH 入口和系统属于上面的支持范围，再按系统选择安装方式。
-
-**方式 A：npm 全局安装**
-
-```powershell
-npm install -g grok-search-rs@0.1.26
-$grokRoot = Join-Path (npm root -g) 'grok-search-rs'
-$grokExe = Get-ChildItem -LiteralPath $grokRoot -Recurse -File |
-  Where-Object { $_.Name -in @('grok-search-rs.exe', 'grok-search-rs') } |
-  Select-Object -First 1 -ExpandProperty FullName
-if (-not $grokExe) { throw '未找到当前平台的 grok-search-rs 程序。' }
-& $grokExe --version
-```
-
-最后一行应输出 `grok-search-rs 0.1.26`。记下 `$grokExe` 的完整路径。
-
-macOS 或 Linux 使用同样的 npm 包，在终端中运行：
-
-```bash
-npm install -g grok-search-rs@0.1.26
-GROK_EXE="$(find "$(npm root -g)/grok-search-rs" -type f -name grok-search-rs -path '*/bin/*' -print | head -n 1)"
-if [ -n "$GROK_EXE" ]; then echo "$GROK_EXE"; "$GROK_EXE" --version; else echo "未找到当前平台的 grok-search-rs 程序"; fi
-```
-
-第一行输出的就是要填给插件的绝对路径。npm 只下载与当前系统匹配的平台程序；如果找不到，检查安装时是否禁用了可选依赖（例如 `--omit=optional`）。全局安装报权限错误（`EACCES`）时，改用 nvm 等用户级 Node.js 安装方式，不要用 `sudo` 安装。
-
-**方式 B：使用上游 Release 资产**
-
-从 [GrokSearch-rs Releases](https://github.com/Episkey-G/GrokSearch-rs/releases) 下载 `v0.1.26` 中与你的平台和架构匹配的资产以及 `SHA256SUMS`，解压到你自己的目录，并按上游说明核对哈希。Windows 示例：
-
-```powershell
-$grokExe = '<你解压出的目录>\grok-search-rs.exe'
-& $grokExe --version
-```
-
-macOS/Linux 的路径示例：
-
-```text
-/Users/<你的用户名>/tools/grok-search-rs
-/home/<你的用户名>/tools/grok-search-rs
-```
-
-输出应为 `grok-search-rs 0.1.26`。不要从第三方网盘或来源不明的镜像下载。
-
-macOS 提示：用浏览器下载的 Release 文件带有隔离标记，Gatekeeper 可能阻止 `grok-search-rs` 运行。先核对 `SHA256SUMS`，再在终端运行一次 `--version`。如果被拦截，到「系统设置」→「隐私与安全性」点「仍要打开」，或运行 `xattr -d com.apple.quarantine <程序的绝对路径>` 去掉隔离标记。用方式 A 的 npm 安装一般不会遇到这个问题。
-
-插件要求传入原生程序的绝对路径，不依赖 `PATH`，也不需要专用启动器。
-
-### 2. 准备 Grok 配置和凭据
-
-如果还没有配置文件，让上游程序生成模板；如果已经有配置，直接使用现有文件，不要重复初始化：
-
-```powershell
-& $grokExe --init
-$grokConfig = Join-Path $env:USERPROFILE '.config\grok-search-rs\config.toml'
-```
-
-Windows 默认配置文件是 `%USERPROFILE%\.config\grok-search-rs\config.toml`；macOS/Linux 默认配置文件是 `$HOME/.config/grok-search-rs/config.toml`。也可以给 Grok 指定另一个配置路径，再把同一个绝对路径填给插件。
-
-推荐 API Key 模式，最小配置如下：
-
-```toml
-grok_api_key = "<你的 xAI API Key>"
-grok_model = "grok-4-1-fast-reasoning"
-web_search_enabled = true
-
-# 可选：额外来源和普通网页抓取。
-# tavily_api_key = "<你的 Tavily API Key>"
-# firecrawl_api_key = "<你的 Firecrawl API Key>"
-```
-
-注意事项：
-
-- Grok 对配置做严格解析，一个未知字段就可能让整个文件失效。以 `--init` 生成的模板和上游文档为准。
-- 上游也支持 OAuth。**上游文档提示 OAuth 模式可能违反 xAI 的服务条款**，是否使用由你自行判断和承担。API Key 模式是本文推荐方式。
-- 插件不读取 Grok 配置文件的内容，也不会上传任何 Key；白名单内的上游环境变量（例如 `TAVILY_API_KEY`）会原样传给 Grok 子进程。不要把配置内容、Token 或设备路径贴到公开 Issue。
-- 本插件不修改共享的 Grok 配置。请使用你明确授权给 DSH 的配置；需要隔离时，创建单独配置并在插件里指向它。
-- `doctor` 是 Grok 的 MCP 工具，不是命令行子命令。需要时把 `grok-search-rs` 接入支持 MCP 的客户端再调用它；查询诊断显示的后备来源状态不等于主后端健康。
-
-### 3. 在 DSH 中安装插件
-
-打开 DSH 左侧「插件」，点右上角「添加插件」，输入下面的包名并安装：
-
-```text
-dsh-grok-search@0.1.0-beta.1
-```
-
-也可以从 GitHub Pre-release 下载 `.tgz`，然后在「添加插件」中粘贴该文件的绝对路径。安装对话框是文本输入，没有本地文件选择器。npm 与 GitHub Release 提供的是同一个 tarball。安装后先不要重启，继续完成下一步的路径配置，最后一次完整重启即可。
-
-Linux CLI/Web 用户先安装[支持范围](#支持范围)表中的 DSH CLI 版本（需要 Node.js 22+），再在要使用的 Web profile 中安装插件：
-
-```bash
-npm install -g @deepseek-ai/dsh@0.2.1-rc.4
-dsh --version
-dsh plugin --profile web add dsh-grok-search@0.1.0-beta.1
-```
-
-`dsh --version` 应输出表中的版本；已经装有表内版本时跳过第一行。若使用 GitHub 的 `.tgz`，把最后一行的包名换成该文件的绝对路径。先完成下一步配置，再运行 `dsh web`；无桌面环境时使用 `dsh web --no-open`，访问终端显示的本机授权链接（不要公开该链接）。不需要把 Web 服务暴露到外网。
-
-默认配置文件为 `$HOME/.dsh/profiles/web/cordis.patch.yml`；显式设置 `DSH_HOME` 时改用 `$DSH_HOME/profiles/web/cordis.patch.yml`。CLI/Web profile 独立于 Desktop，不会自动沿用桌面插件配置。
-
-![在 DSH PluginManager 中查看 dsh-grok-search](https://raw.githubusercontent.com/Lain-in-coding/dsh-grok-search/main/docs/images/plugin-detail.png)
-
-包内包含五个组件，但用户只需要安装、启停和卸载一个插件 `dsh-grok-search`：
-
-| 组件 | 作用 |
-|---|---|
-| `grok-search-core` | 把 `web_search` 查询交给外部 Grok |
-| `grok-search-control` | 接管、停止与恢复路由 |
-| `grok-search-settings-ui` | 设置页「Grok 搜索接管」 |
-| `grok-search-route-verifier` | 核验路由与原始官方搜索计数 |
-| `grok-search-recovery` | 补完上一次未完成的释放 |
-
-早期内部候选曾有一个独立包 `dsh-grok-search-recovery`。它已经并入本包。如果你的 PluginManager 里仍留着这个旧包，请先停用、移除并完整重启 DSH，再安装本包。公开 Beta 不需要、也不会提供第二个插件。
-
-### 4. 配置 Grok 程序路径
-
-DSH Desktop 的 profile 由应用管理，`dsh plugin` 命令会提示 `managed exclusively by the Electron application`，因此请直接编辑**所用 profile** 的用户配置层。CLI/Web 使用你启动命令指定的 profile。
-
-Windows Desktop 默认 profile 是 `%USERPROFILE%\.dsh\profiles\desktop`，macOS Desktop 默认是 `$HOME/.dsh/profiles/desktop`；Linux CLI/Web 默认是 `$HOME/.dsh/profiles/web`。指定 `DSH_HOME` 时以该目录为准。
-
-```text
-%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml
-```
-
-如果你明确使用另一个 profile，请替换成该 profile 的实际路径。把下面的条目加入 `cordis.patch.yml`，并把 `executable` 换成上一步得到的绝对路径：
-
-```yaml
-- id: grok-search-core
-  config:
-    executable: 'C:/Users/<你的用户名>/.../grok-search-rs.exe'
-    configPath: 'C:/Users/<你的用户名>/.config/grok-search-rs/config.toml'
-    budgetMs: 120000
-```
-
-macOS 使用 POSIX 路径，例如（Linux 把 `/Users/<你的用户名>` 换为实际 `/home/<你的用户名>`）：
-
-```yaml
-- id: grok-search-core
-  config:
-    executable: '/Users/<你的用户名>/tools/grok-search-rs'
-    configPath: '/Users/<你的用户名>/.config/grok-search-rs/config.toml'
-    budgetMs: 120000
-```
-
-字段说明：
-
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `executable` | 是 | 已有 Grok 原生程序的绝对路径 |
-| `configPath` | 建议 | 已有 Grok 配置文件的绝对路径；留空时由 Grok 按自身规则读取 |
-| `executableArgs` | 否 | 传给 Grok 的启动参数，不要放密钥 |
-| `budgetMs` | 否 | 单次查询总预算，范围 30000 到 120000 毫秒，默认 120000 |
-
-路径使用正斜杠可以避免 YAML 转义问题。不要在这里写 Key，也不要指向共享给其他程序的正式配置文件，除非你确认允许 DSH 使用。
-
-修改后必须完整退出 DSH 并重启。重启后再次打开插件详情，确认 `dsh-grok-search` 已启用且没有加载错误。
-
-`executable` 是必填路径；使用 Grok 默认配置时可以留空 `configPath`，如果显式填写则必须是绝对路径。如果 `executable` 未填写、不是绝对路径或文件不存在，插件仍会加载，但 `grok-search` provider 不会进入可用状态。DSH 会按自己的选择规则明确报 `WEB_PROVIDER_CONFIGURED_UNAVAILABLE`，插件不会因此自动改用官方搜索。
-
-如果 profile 的 `cordis.patch.yml` 只有 `[]`，请用上面的条目替换它；如果里面已经有相同 `id`，更新原条目，不要增加重复条目。已有其他 `- id:` 条目时，把这个新条目追加到列表末尾。
-
-### 5. 完整重启并验收
-
-先退出整个 DSH（包括托盘进程），再重新启动。然后点击侧栏底部的「设置」→「内置插件」→「Grok 搜索」，确认设置卡片：
-
-![Grok 搜索接管设置卡片](https://raw.githubusercontent.com/Lain-in-coding/dsh-grok-search/main/docs/images/settings-card.png)
-
-状态应为「正在接管」。「正在接管」只说明路由已经交给插件，不代表 Grok 程序和凭据一定可用；请继续按下面的「30 秒验收」实际搜索一次。
-
-### 30 秒验收
-
-1. 打开设置页，确认「当前状态」为「正在接管」。
-2. 新建普通对话，发起一次需要联网搜索的问题，确认回答包含 Grok 返回的来源。
-3. 发起一次普通网页抓取，确认原来的 `fetchProvider` 仍可用。
-4. 发送一条不需要搜索的普通消息，确认聊天仍正常。
-5. 完整重启 DSH，再重复第 1 步和第 2 步，确认接管状态与搜索都保持。
-
-如果第 1 步已经失败，请先看下面的排查表，不要反复重装。重装不能替代配置修复。
-
-## 停止、停用与卸载
-
-### 停止接管
-
-设置页「Grok 搜索接管」中点击「停止接管并恢复原搜索」。owner 存活时这是明确退出，会即时生效：
-
-- 插件立即停止接受新的 Grok 查询，并取消正在执行的 Grok 查询。
-- 在短暂的回收期限内等待这些查询结束；回收成功后再恢复原来的搜索设置。
-- 核验原搜索路由、`fetchProvider` 和已有依赖。
-- 记录释放完成与路由验证结果。
-
-如果回收或 drain 失败，这次停止会明确报错，不会提交释放完成，也不会恢复原搜索路由；设置页会保持「释放未完成」。此时请保留错误码并完整重启 DSH。
-
-停止状态会被记住。之后重启、停用再启用都不会自动重新接管。Beta 没有「恢复接管」按钮；需要重新接管时，先完整退出 DSH，删除所用 profile 下的 `control-intent.records` 文件夹，再启动 DSH。只删除这一个插件记录目录，不要删除 profile 里的其他内容。
-
-### 停用插件
-
-在 PluginManager 中停用 `dsh-grok-search`，然后**完整重启 DSH**。五个组件一起离场，DSH 按自身配置使用原来的搜索设置。
-
-- 停用前没有点「停止接管」：重新启用后，插件按当前搜索选择重新接管。
-- 停用前已经点「停止接管」：记录保持 released，重新启用后仍然不接管。
-
-普通关闭窗口、插件 dispose、重启和依赖失效都不等于用户明确退出，也不会伪造释放完成。
-
-### 卸载
-
-建议先在设置页停止接管，再在 PluginManager 中停用、移除，并完整重启。卸载不会删除 profile 中的 `control-intent.records`；它不影响 DSH 的搜索或其他功能。完全退出 DSH 后可以手动删除，也可以保留。
-
-## 搜索失败时会发生什么
-
-搜索链路的错误会直接返回给模型和用户，保留错误码。插件不会把上游故障伪装成「没有结果」，也不会自动回退 `deepseek-official`。
-
-- 普通聊天继续可用。
-- 原来的 `fetchProvider` 继续可用。
-- 其他插件的既有依赖不会被改写。
-- 只有当你明确点击「停止接管」或在 PluginManager 停用并完整重启后，搜索才回到原来的设置。
-
-常见错误码：
-
-| 错误码 | 含义 | 先检查什么 |
-|---|---|---|
-| `GROK_SEARCH_FAILED` | 未分类的搜索失败 | 下方排查表，从程序路径和配置开始 |
-| `WEB_PROVIDER_CONFIGURED_UNAVAILABLE` | DSH 已选择 `grok-search`，但插件认为 Grok 当前不可用 | `executable` 是否为存在的原生程序绝对路径；是否正在停止接管 |
-| `GROK_PROGRAM_MISSING` | 直接调用 provider 时发现 Grok 程序路径无效；正常 DSH 搜索通常先由宿主报 `WEB_PROVIDER_CONFIGURED_UNAVAILABLE` | 重新确认 `executable` 是否仍存在，并完整重启 DSH |
-| `GROK_PROCESS_ERROR` | 启动 Grok 进程失败 | 路径是否指向原生程序，而不是 `.cmd`、`.ps1` 或 npm shim；当前用户是否有执行权限 |
-| `GROK_CONFIG_INVALID` | 插件配置无效，例如 `configPath` 不是绝对路径 | `configPath` 必须为空或绝对路径；配置内容本身的问题通常由 Grok 报出 |
-| `GROK_MCP_ERROR` | 与 Grok 的 MCP 会话失败 | Grok 版本是否为 `0.1.26`，能否单独运行 |
-| `GROK_CHILD_EXIT` | Grok 在查询结束前退出 | 上游配置、凭据和程序日志 |
-| `GROK_TOOL_ERROR` | Grok 工具返回错误，常见于 Key、额度或上游服务问题 | 用 Grok 的 MCP 客户端调用 `doctor`，检查 Key、额度和网络 |
-| `GROK_PROTOCOL_ERROR` / `GROK_INVALID_RESULT` | 配置的程序不是兼容的 stdio MCP 服务，或返回的消息、工具结果结构无效 | 确认 `executable` 指向原生 `grok-search-rs` `0.1.26` |
-| `GROK_STDOUT_LIMIT` | Grok 单条 MCP 消息超过 1 MiB | 缩小查询范围或确认上游版本 |
-| `GROK_TIMEOUT` | 插件自身预算到期，返回 `GROK_TIMEOUT` | 缩短查询或检查上游网络 |
-| `TOOL_TIMEOUT` | DSH `web_search` 工具自身的超时策略到期 | DSH 内置 preset 默认 60 秒；插件预算大于 60000 也不会延长这个宿主上限 |
-| `GROK_QUEUE_FULL` | 同时运行的查询太多 | 等待已有查询结束再试 |
-| `GROK_SEARCH_STOPPING` | 插件正在停止，新查询被拒绝 | 等停止完成后重新搜索 |
-| `GROK_PROCESS_REAP_FAILED` | 已取消的 Grok 进程未能及时回收 | 插件会暂停新查询；重启 DSH 并保留错误信息 |
-| `CONTROL_ROUTE_UPDATE_TIMEOUT` | 路由更新超时 | 重启 DSH，检查 `control-intent.records` 是否有冲突 |
-| `CONTROL_RELEASE_ROUTE_UNVERIFIED` | 释放后路由核验未通过 | 不要删除记录；保留错误信息，完整重启后查看设置页 |
-| `CONTROL_SEARCH_SELECTION_CONFLICT` | 接管期间你在别处改了搜索设置 | 插件不覆盖你的新设置；需要重新接管时按「停止接管」一节处理 |
-
-## 常见问题
-
-| 现象 | 原因 | 处理 |
-|---|---|---|
-| 设置页显示「正在接管」，但搜索失败并报 `WEB_PROVIDER_CONFIGURED_UNAVAILABLE` | 「正在接管」只表示路由已接管；`executable` 未填、填错或文件不存在时 Grok 仍不可用 | 核对 `executable` 是否为存在的原生程序绝对路径；单独运行 `grok-search-rs --version`，再完整重启 DSH |
-| 设置页显示「接管冲突」 | 接管期间你在别处改了搜索设置 | 插件不覆盖你的新设置；回到 DSH 原网页搜索设置确认选择 |
-| 设置页显示「控制组件不可用」或「接管未完成」 | 控制组件没有加载，或接管/释放流程没有完成 | 保留错误码，完整重启 DSH；持续失败时提交 Issue |
-| 搜索返回 `GROK_PROCESS_ERROR` | 程序路径在加载后失效，或路径不是可执行文件 | 使用原生 `grok-search-rs` 程序的绝对路径，不要用 `.cmd`、`.ps1` 或 npm shim |
-| 搜索返回 `GROK_CONFIG_INVALID` | `configPath` 不是绝对路径 | 把 `configPath` 留空或改成绝对路径 |
-| 搜索返回 `GROK_TOOL_ERROR`，或项目里说 Key 无效、额度不足 | Grok 自己的上游或凭据问题 | 用 Grok 的 MCP 客户端调用 `doctor`，检查 Key、额度和网络 |
-| 搜索返回 `GROK_CHILD_EXIT` 或 `GROK_MCP_ERROR` | 凭据、网络或上游程序问题 | 用 Grok 的 MCP 客户端调用 `doctor` 和最小查询复现；再重试 DSH |
-| 插入配置后没有生效 | 没有完整重启 DSH | 退出所有 DSH 进程后重新启动 |
-| `dsh plugin` 报 `managed exclusively by the Electron application` | Desktop profile 由 Electron 应用独管 | 直接编辑该 profile 的 `cordis.patch.yml`，不要在桌面 profile 上使用 CLI 插件命令 |
-| PluginManager 里出现两个插件 | 早期内部候选遗留了 `dsh-grok-search-recovery` | 停用并移除旧包，完整重启后只保留 `dsh-grok-search` |
-| 停止后想重新接管却找不到按钮 | Beta 没有恢复按钮 | 完整退出 DSH，删除 profile 下的 `control-intent.records`，再启动 |
-| 升级 DSH 后搜索悄悄回到 DSH 自带搜索，设置页的「Grok 搜索接管」可能消失 | 新版 DSH 不在插件的版本范围内，DSH 启动时跳过了本插件；插件没有加载，也就无法报错 | 查看 [support-matrix.json](./support-matrix.json) 或 Release 说明；等插件发布支持该版本的新版本，或先不升级 DSH。不要用 `dsh plugin allow-version` 强制放行 |
-| 卸载后仍看到控制记录 | 卸载有意不清理 profile 记录 | 完全退出 DSH 后可手动删除 `control-intent.records` |
-
-更多实现细节和验证方法见[开发与验证](https://github.com/Lain-in-coding/dsh-grok-search/blob/main/docs/开发与验证.md)。
-
-## 工作原理与数据边界
-
-插件复用 DSH 公开的插件、Web 搜索和设置页接缝，不修改宿主或 ASAR，不使用永久 selector、产品专用启动器或全局 monkey-patch。
-
-- 模型仍调用官方 `web_search`，插件把它转成对 Grok MCP 程序的查询。
-- 插件自身不发起搜索网络请求。联网由你提供的外部 Grok 完成。
-- 插件启动的唯一子进程是你配置的 Grok 程序，使用 `shell: false`，只继承系统、代理和已知上游变量。
-- 插件不读取或上传 Grok 配置中的凭据；Grok 自己读取你指定的配置。
-- 不保存 Grok 的 stderr 原文，避免把上游输出里的敏感信息写进日志。
-- 插件只在所用 profile 写入自己的 `control-intent.records`，不改 profile 的其他配置、共享 Grok 配置、凭据或全局程序。
-- 原始搜索计数只读取 DSH Session 的事件类型，不保留事件正文。它统计的是官方 `deepseek-official` provider 的**派发尝试**，不是网络成功，也不是宿主级 release 完成回执。
-- 每个查询最多返回 45000 个序列化字符，单条 MCP 消息最多 1 MiB；最多 4 个查询同时运行，8 个排队。
-
-## 已知限制
-
-- 只承诺[支持范围](#支持范围)表中列出的系统、入口和 DSH 版本组合。macOS Intel、Windows ARM、Windows/macOS 上的 CLI/Web 和 `0.2.2-alpha.2` 都不在范围内。
-- DSH 升级到版本范围以外时，宿主启动时会跳过本插件，搜索按原设置回到 DSH 自带搜索。插件此时没有加载，无法主动提示。
-- Grok 基线为 `0.1.26`。
-- 插件不自动安装 Grok，不申请 Key，不修改正式 profile、共享配置或凭据。
-- 不支持源码 live HMR。代码升级、停用、移除后都需要完整重启 DSH。
-- 跨资源提交崩溃、完整在途事务和官方联网 `fetch` 验收未覆盖。
-- 停止接管后没有「恢复接管」按钮，需要按上文删除记录后重启。
-- 卸载不清理 `control-intent.records`。
-- 宿主没有 release 专属完成事件。释放按「意图提交 + 路由恢复验证 + 相对原始搜索计数增量 + 完成 revision」的复合证据判定，不冒充宿主专属回执。
-- 本项目不是 DSH 官方插件，也不代表 DeepSeek 或 xAI。
-
-## 本版验证了什么
-
-发布前，[支持范围](#支持范围)表中的每个组合都用同一个插件包通过了自动化门禁。门禁使用隔离的 DSH 数据目录和临时 profile，不读取正式 profile、共享 Grok 配置或真实凭据；宿主是官方 DSH 程序，Grok 是真实的 `grok-search-rs` `0.1.26` 程序，它的上游请求由本机模拟服务接收。Windows 另外用真实凭据做了 Grok 上游查询。Linux 门禁在 WSL Ubuntu 22.04 中运行。
-
-- 干净安装、安装包逐文件核对和完整重启。
-- 搜索交给 Grok，网页抓取、普通聊天和已有依赖保持不变。
-- 配置重载过渡期间不回退官方搜索。
-- owner 存活时在真实设置页点击「停止接管并恢复原搜索」，并核验原搜索路由、`fetchProvider` 和已有依赖恢复。
-- PluginManager 安装、启用、停用、移除和重启后的清理。
-- 从 DSH Session 事件统计原始官方搜索派发次数。
-- Desktop 另外覆盖多 Session、preset、PTC、重启重连和预算矩阵，其中路由计数使用夹具。
-- 发布包白名单、两次打包哈希一致、依赖审计和敏感信息扫描。
-
-每次运行的 runId 与证据摘要记录在 [CHANGELOG](https://github.com/Lain-in-coding/dsh-grok-search/blob/main/CHANGELOG.md) 和 GitHub Release 说明里。
-
-仍属于夹具、或未接线、或未覆盖的项，都在[开发与验证](https://github.com/Lain-in-coding/dsh-grok-search/blob/main/docs/开发与验证.md)里逐项列出。宿主没有 release 专属完成回执；释放使用复合证据判定，不冒充宿主专属回执。本版是公开 Beta，不等于稳定版。
-
-## 反馈
-
-请在 [GitHub Issues](https://github.com/Lain-in-coding/dsh-grok-search/issues) 反馈，并附上：
-
-- DSH Desktop/runtime 版本与 Grok 版本。
-- 系统与入口（Desktop 或 CLI/Web）。
-- 设置页显示的原始错误码和错误文本。
-- 可复现的最短步骤。
-- 插件版本 `0.1.0-beta.1`。
-
-请先对日志中的用户名、设备路径和内部地址脱敏。**永远不要上传 API Key、OAuth Token、完整 `config.toml` 或带凭据的截图。**
+| 系统与入口 | 首发目标 DSH |
+| --- | --- |
+| Windows x64 Desktop | `0.2.1-rc.2`、`0.2.1-rc.3` |
+| macOS arm64 Desktop | `0.2.1-rc.2`、`0.2.1-rc.3` |
+| Linux x64 CLI/Web | `0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4` |
+
+所有组合共用同一个 tarball；DSH 会按 `engines.dsh` 检查宿主版本。表外组合
+（例如 Linux Desktop、macOS Intel、Windows ARM）没有发布承诺。Grok 基线为
+`grok-search-rs 0.1.26`；插件会优先复用兼容的已有版本，不会升级或覆盖你
+全局安装的程序。新体验候选的各组合验收状态见
+[支持矩阵](./support-matrix.json)；旧版测试通过不代表新候选已通过。
+
+## 安装与首次使用
+
+1. 打开 DSH「设置」→「插件」→「添加插件」，输入 `dsh-grok-search` 并安装、
+   启用。首发后 npm `latest` 与 `next` 指向同一个 Beta，可用裸名安装；
+   它不是额外的 stable 版本。使用 Release 安装包时，在添加页面选择/输入
+   `.tgz` 的本机绝对路径。CLI/Web 可执行：
+
+   ```shell
+   dsh plugin --profile web add dsh-grok-search@0.1.0-beta.1
+   ```
+
+2. 在「已安装」列表打开 `dsh-grok-search` 详情。安装启用后会自动发现已有
+   Grok；缺失时自动下载并校验当前平台的私有运行包。下载失败显示原因和重试
+   入口，不更改全局 npm 源，不安装另一个 DSH 插件。
+3. 点击 Grok 行，填 API Key 并「保存更改」。使用官方 xAI 服务时，默认地址
+   已填好；使用第三方兼容网关时，在弹窗切换协议，填写该网关地址和 Key。
+   已有共享配置自动读取，旧用户无需重填。只用补充来源也可以：关闭 Grok，
+   配置并开启至少一个 Tavily、Exa、TinyFish 或 Firecrawl。
+4. 点击「测试搜索」，确认额度提示后逐一检查所有已开启来源。每个来源显示成功、
+   HTTP 状态码或网络错误；测试不会把一个成功来源误报成全部通过。
+   然后在聊天中提出需要联网的问题，DSH 的原 `web_search` 会走本插件。
+
+Key 默认遮蔽；在本机直连或 HTTPS 的设置页面中，可点击眼睛查看、点击复制。
+无法确认安全传输的远程 HTTP 连接只显示脱敏状态，不允许明文查看、复制或
+提交 Key，但仍可执行服务器端诊断。Key 不写入 profile 的组件配置、错误文本
+或日志；共享配置文件和保存前历史备份本身会包含凭据，详见安全边界。
+
+### 为什么还需要 Grok 程序？
+
+`grok-search-rs` 负责实际搜索和网页内容处理，本插件负责把它接到 DSH 的原
+`web_search`：自动准备程序、复用配置、可视化设置、主搜/补搜路由、错误诊断、
+受管进程和即时恢复。只安装 MCP 并不自动接管 DSH 的原搜索工具。
+
+你不需要再学习另一套安装流程。插件优先发现 PATH、npm 原生平台包和 Cargo
+安装中的兼容程序，发现成功就复用；没有才下载到 profile 私有缓存，不改变
+其他 Agent 的程序路径。它不会创建第二份 Grok 配置，也不影响其他客户端的
+进程。上游 `latest` 必须在本插件已验证版本名单内才允许自动安装；当前基线
+为 `0.1.26`。上游出现未经验证的新版本时，会明确拒绝，不盲目安装。
+
+### 配置文件入口
+
+页面底部的「Grok 共享配置」显示实际文件；文件/文件夹图标可打开该宿主的
+配置文件或所在位置，不能打开时可复制路径。远程 Web 页面操作的是 DSH
+服务器文件，不是浏览器所在电脑；不要把路径当作文件下载链接。
+
+默认位置为用户目录下 `.config/grok-search-rs/config.toml`；
+`GROK_SEARCH_CONFIG` 环境变量优先指定其他位置。所有字段以启动环境覆盖文件，
+再取上游默认值。被环境覆盖的字段显示来源并只读，插件不改系统环境变量。
+
+**保存会修改 Grok 共享配置，使用同一文件的其他 MCP 客户端也会受到影响。**
+没有独立的第二份 DSH Key 配置。来源排序和开关也写这份文件；Grok 主搜索
+开关及 GitHub 检测开关只对当前 DSH profile 生效，不删除共享凭据。
+外部修改后页面重新读取 revision；同字段或 Key 冲突保留草稿，请点击
+「读取最新配置」核对再保存。保存成功表示文件已写入，通常在下一次搜索
+生效，不等于 Key 已验证有效或当前在途请求已经切换。
+
+### 路由与补充来源
+
+Grok 是主搜索。Tavily、Exa、TinyFish、Firecrawl 是补充来源，可以拖动或用
+`Alt+↑/↓` 调整顺序。页面中的「补充来源数」与「回退来源数」仍表示结果条数，
+不是供应商数量；「测试连通性」则会覆盖所有已开启供应商。
+
+GitHub Token 仅用于专用链接抽取（Issue/PR/Release 等），不加入补充来源
+搜索顺序，也不会枚举私有仓库。
+
+Grok、Tavily、Exa、TinyFish、Firecrawl、GitHub 各有独立配置弹窗；TinyFish
+分别展示搜索和抓取 BaseUrl，Tavily 可添加多个 Key。Hub 弹窗可调整补充条数、
+超时、缓存和每查询回复字符上限；插件预算、程序位置和配置位置只读。
+
+未配置是灰色，配置完整会点亮，但点亮不等于连通性通过。状态条的「未检查、
+检查中、有效、无结果、失效」分别表示最近真实诊断；失败显示短码与简短提示，
+不会一律当作 Key 错误。测试遍历全部开启来源和全部 Tavily Key，普通搜索则
+在首个有结果的回退来源收敛。GitHub 只检测 Token/匿名额度，不是第五个搜索源。
+原生 Grok 内部没有逐节点遥测时，只展示整体和已知最终路由，不虚构供应商
+或具体 Key 的实时成功。
+
+测试和搜索可能消耗供应商额度。原生 Grok 会并行预取补充来源，不能根据
+主搜成功、补充条数为零或界面线条推断“没有备用请求”；取消也不能退回已被
+上游接受的请求费用。
+
+## 失败与恢复
+
+- Grok 失败且补充来源实际返回结果：显示“已静默回退”，搜索继续返回结果。
+- 主搜索和所有补充来源都失败：返回带错误码的明确错误，不回退官方搜索。
+- 关闭 Grok：只对 DSH 关闭主搜索，自动使用已开启的补充来源。
+- 关闭整个插件：当场停止接管并恢复 DeepSeek 官方搜索；普通 dispose、
+  restart 或依赖失效不会被当成用户明确退出。
+- 受管程序准备失败、配置解析失败、CAS 冲突和依赖失效均会在设置页显示
+  可操作的错误，不会静默换用另一份全局程序或配置。
+
+先看短码再处理：`401/403` 检查 Key/权限，`429` 检查限流或额度，`404`
+检查 BaseUrl，`NETWORK/TIMEOUT` 检查网络/代理。`CONFIG_CONFLICT` 先读取最新
+配置，`CONFIG_COMMIT_UNCERTAIN` 先回读确认，不能重复点击覆盖；
+`CONFIG_BUSY/PREFERENCES_BUSY` 可能是并发保存或上次中断，插件不会抢占锁。
+程序下载失败可重试；未经验证版本、缓存损坏、进程未回收则保持明确错误。
+
+关闭整个插件会卸载配置界面，重新启用即可继续编辑和搜索；不需要删除记录。
+依赖失效或 DSH 升级到声明范围外时，本包可能无法加载，设置页也可能不存在。
+特别是范围外升级，DSH 自身会跳过插件并使用原搜索设置；这不是本插件失败
+时的自动回退策略。请安装支持范围内的 DSH/插件组合，不强制放行未知版本。
+
+## 数据与安全边界
+
+- 不修改宿主程序、ASAR、全局程序或其他 Agent 配置。安装/开关由 DSH 原生
+  PluginManager 管理；只有用户主动保存时才修改所选 Grok 共享文件。
+- 私有下载包位于当前 profile 的运行缓存，下载前校验 npm integrity，解压后
+  校验平台白名单和握手能力。
+- 共享 `config.toml` 的保存是本地协作式 CAS：提供 revision、历史备份和
+  恢复；不承诺网络文件系统锁、非协作写入者最后瞬间的修改或断电目录耐久。
+  控制记录另用不可变 revision 与独占硬链接发布，记录提交不等于路由改变。
+- 每个 DSH 实例最多一个活动查询、最多八个排队查询；进程回收失败会封锁
+  新查询并给出错误，避免泄漏后台进程。
+- 本项目不是 DeepSeek 或 xAI 官方产品。请不要在 Issue、截图或日志中上传
+  API Key、OAuth Token、完整配置文件或未脱敏的本机路径。
+
+数据位置（均在所用 DSH profile 内，卸载不会自动删除）：
+
+| 位置 | 内容与处理 |
+| --- | --- |
+| `grok-search/runtime-cache/` | 私有原生程序与校验 receipt，不含用户 Key |
+| `grok-search/preferences.json` | DSH 主搜/GitHub 检测开关，不保存 Key |
+| `grok-search/config-history/<revision>.toml` | 保存前共享文件的完整历史，**可能含明文 Key/Token** |
+| `control-intent.records/` | 接管/释放意图、revision 和路由验证证据 |
+
+历史备份用 POSIX `0600` 创建，但 Windows 的这个 mode 不等于独立 ACL 或加密。
+请保护 profile 目录及备份，勿提交到 Git、上传云盘或反馈附件。删除 Key
+并不擦除历史中的旧 Key。你可在确认无需撤销后自行处理历史；删历史会失去
+对应恢复能力。插件不自动清理、抢占遗留锁或承诺跨资源原子事务。
+
+## 版本与发布
+
+当前候选版本为 `0.1.0-beta.1`。获准首发后 npm `next`/`latest` 与 GitHub
+Pre-release 使用同一版本、同一 tarball；Release 附件提供 SHA-256 校验。
+Beta 不代表稳定版，DSH 新版本需要先加入支持矩阵后才会得到兼容承诺。
+没有承诺支持任意源码 live HMR、跨资源提交崩溃、完整在途事务或未测平台。
+宿主没有专属 release 完成事件，恢复按意图、路由验证、计数窗口及内部完成
+revision 的复合证据判断，不冒充宿主完成回执。
 
 ## 开发
 
-实现结构、控制记录与 CAS 边界、释放事务、验证命令、证据范围和发布流程见[开发与验证](https://github.com/Lain-in-coding/dsh-grok-search/blob/main/docs/开发与验证.md)。版本历史见 [CHANGELOG](https://github.com/Lain-in-coding/dsh-grok-search/blob/main/CHANGELOG.md)。
+```powershell
+npm run check
+npm run build:client
+npm run test:all
+npm run pack:beta
+```
+
+需要先按 `package-lock.json` 准备开发依赖。`pack:beta` 是受白名单约束的打包
+步骤，不替代构建和测试。自动测试使用隔离 profile 与合成 Key；真实付费
+上游仅经维护者授权手动验证。完整证据/历史失败保留在本地 `artifacts/`，
+不随 npm 包或公开仓库上传。
 
 ## 许可证
 

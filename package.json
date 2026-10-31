@@ -2,7 +2,7 @@
   "name": "dsh-grok-search",
   "version": "0.1.0-beta.1",
   "type": "module",
-  "description": "用你自己的 grok-search-rs（Grok）接管 DSH 内置网页搜索；失败明确报错，不回退官方搜索。",
+  "description": "用 Grok 接管 DSH 网页搜索；支持共享配置、补充来源静默回退和即时恢复官方搜索。",
   "engines": {
     "node": ">=22.0.0",
     "dsh": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4"
@@ -16,15 +16,26 @@
     "test:release": "node --test test/release-transaction.test.mjs",
     "test:wiring": "node --test test/product-wiring.test.mjs",
     "test:client": "node --test test/client.test.mjs",
+    "test:session": "node --test test/session-owner.test.mjs",
+    "test:mcp": "node scripts/mcp-session-probe.mjs --runtime-root .",
+    "test:config": "node --test test/shared-config.test.mjs",
+    "test:security": "node --test test/connection-security.test.mjs",
+    "test:source": "node --test test/source-adapters.test.mjs test/source-chain.test.mjs test/private-preferences.test.mjs test/routed-search.test.mjs",
+    "test:settings": "node --test test/settings-gateway.test.mjs",
+    "build:client": "node scripts/build-client.mjs",
+    "test:program": "node --test test/program-discovery.test.mjs test/program-install.test.mjs test/program-controller.test.mjs",
     "verify:product-install": "node scripts/b2-product-install.mjs",
     "check:commit": "node scripts/check-commit-message.mjs",
     "verify:internal": "node scripts/internal-candidate.mjs",
-    "test:all": "npm run check && npm test && npm run test:control && npm run test:release && npm run test:wiring && npm run test:client",
+    "test:all": "npm run check && npm test && npm run test:control && npm run test:release && npm run test:wiring && npm run test:client && npm run test:session && npm run test:mcp && npm run test:config && npm run test:program && npm run test:security && npm run test:source && npm run test:settings",
+    "prepack": "npm run build:client && npm run test:all",
     "prepublishOnly": "npm run test:all",
     "pack:beta": "node scripts/pack-internal.mjs --beta"
   },
   "files": [
     "src/core/",
+    "src/bundle.mjs",
+    "src/program.mjs",
     "src/index.mjs",
     "src/provider.mjs",
     "src/control.mjs",
@@ -38,9 +49,11 @@
     "support-matrix.json",
     "LICENSE"
   ],
-  "main": "src/index.mjs",
+  "main": "src/bundle.mjs",
   "exports": {
-    ".": "./src/index.mjs",
+    ".": "./src/bundle.mjs",
+    "./search-core": "./src/index.mjs",
+    "./bundle": "./src/bundle.mjs",
     "./package.json": "./package.json",
     "./control-intent": "./src/core/control-intent-store.mjs",
     "./startup-recovery": "./src/core/startup-recovery.mjs",
@@ -55,12 +68,15 @@
   },
   "peerDependencies": {
     "@deepseek-ai/dsh": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4",
+    "@deepseek-ai/dsh-app-boot": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4",
     "@deepseek-ai/dsh-web": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4",
     "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4",
     "@deepseek-ai/schemastery": "~3.18.5"
   },
   "dependencies": {
-    "@modelcontextprotocol/client": "2.4.0"
+    "@modelcontextprotocol/client": "2.4.0",
+    "smol-toml": "1.9.1"
   },
   "dsh": {
     "bundle": {
@@ -68,7 +84,9 @@
     },
     "client": {
       "inject": [
+        "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
         "@deepseek-ai/dsh-client-ui-settings"
       ],
       "platform": "web"

@@ -65,18 +65,18 @@ test('结构化和单个 JSON 文本响应均可解码，错误不得伪装成�
   assert.throws(() => mapSearchResult({ sources: [{ title: '无 URL' }] }), error => error.code === 'GROK_INVALID_RESULT');
 });
 
-test('默认最多四个运行、八个排队，超出容量明确失败', async () => {
+test('默认一个运行、八个排队，超出容量明确失败', async () => {
   const gate = deferred(); let calls = 0, peak = 0, active = 0;
   const executor = createSearchExecutor({ snapshot: () => ({}), runQuery: async () => {
     calls++; active++; peak = Math.max(peak, active); await gate.promise; active--; return answer;
   } });
-  const requests = Array.from({ length: 12 }, (_, index) => executor.search({ query: String(index) }));
+  const requests = Array.from({ length: 9 }, (_, index) => executor.search({ query: String(index) }));
   await tick();
-  assert.equal(calls, 4);
+  assert.equal(calls, 1);
   assert.equal(executor.snapshot().queued, 8);
   await assert.rejects(executor.search({ query: '超过容量' }), error => error.code === 'GROK_QUEUE_FULL');
   gate.resolve(); await Promise.all(requests);
-  assert.equal(calls, 12); assert.equal(peak, 4);
+  assert.equal(calls, 9); assert.equal(peak, 1);
   assert.equal(executor.snapshot().running, 0);
   await executor.dispose();
 });

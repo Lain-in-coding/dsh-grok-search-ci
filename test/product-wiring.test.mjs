@@ -83,6 +83,39 @@ function createRequiredRecord(ctx, store, hostId) {
   return store.compareAndSwap({ expectedRevision: 0, intent });
 }
 
+test('native release keeps live loader and counter across child-context disposal', async () => {
+  const ctx = makeContext({ originalCalls: 0 });
+  await applyControl(ctx, { counterSnapshot: () => ({ calls: 0, source: 'test-counter', adapterVersion: 1 }) });
+  const control = ctx.get('grokSearchControl');
+  const gate = deferred();
+  ctx.get('grokSearchCore').dispose = () => gate.promise;
+  const release = control.stop('native-bundle-disable', { unloading: true });
+  ctx.dispose();
+  Object.defineProperty(ctx, 'loader', { get: () => { throw new Error('child context has been disposed'); } });
+  gate.resolve();
+  const outcome = await release;
+  assert.equal(outcome.kind, 'released');
+  assert.equal(outcome.completionCommitted, true);
+  assert.equal(outcome.routeVerified, true);
+});
+
+test('native release completes when the host counter reports only calls', async () => {
+  // Packaged Desktop regression: a host counter returning `{ calls }` left
+  // undefined receipt members, and the CAS store rejected the completion.
+  const ctx = makeContext({ originalCalls: 0 });
+  await applyControl(ctx, { counterSnapshot: () => ({ calls: 0 }) });
+  const control = ctx.get('grokSearchControl');
+  const outcome = await control.stop('native-bundle-disable', { unloading: true });
+  assert.equal(outcome.kind, 'released');
+  assert.equal(outcome.completionCommitted, true);
+  const completion = createProductStore(ctx).read().intent.releaseCompletion;
+  assert.equal(completion.routeVerified, true);
+  assert.equal(completion.routeEvidence.originalSearchDelta, 0);
+  assert.equal(typeof completion.routeEvidence.counterSource, 'string');
+  assert.equal(completion.routeEvidence.counterAdapterVersion, 1);
+  ctx.dispose();
+});
+
 test('product control entry creates one versioned record and ordinary dispose does not release it', async () => {
   const ctx = makeContext();
   await applyControl(ctx);
@@ -169,6 +202,32 @@ test('product owner explicit stop releases the route and records completion', as
   assert.equal(ctx.get('web').searchProviderId, 'candidate-original');
   ctx.dispose();
   assert.deepEqual(createProductStore(ctx).read(), after);
+});
+
+test('a fresh enabled owner reacquires a completed release and preserves immutable history', async () => {
+  const ctx = makeContext({ originalCalls: 0 });
+  await applyControl(ctx);
+  const store = createProductStore(ctx);
+  const oldOwner = ctx.get('grokSearchControl');
+  await oldOwner.stop('native-bundle-disable');
+  const released = store.read();
+  assert.equal(released.intent.policy, 'released');
+  assert.equal((await oldOwner.retry()).phase, 'released');
+  ctx.dispose();
+  ctx.provide('grokSearchCore', { releaseBarrier: createReleaseBarrier(), dispose: async () => {} });
+  await applyControl(ctx);
+  const state = ctx.get('grokSearchControl').publicSnapshot();
+  assert.equal(state.phase, 'required');
+  assert.equal(state.completionCommitted, false);
+  assert.equal(state.releaseOperationId, null);
+  assert.equal(ctx.get('web').searchProviderId, 'grok-search');
+  const reacquired = store.read();
+  assert.equal(reacquired.revision, released.revision + 1);
+  assert.equal(reacquired.intent.priorIntent.policy, 'released');
+  assert.deepEqual(reacquired.intent.priorIntent.releaseCompletion, released.intent.releaseCompletion);
+  assert.equal(reacquired.intent.priorIntent.priorIntent, null);
+  assert.equal(released.intent.priorIntent.policy, 'required');
+  ctx.dispose();
 });
 
 test('product control stop prelude failure is recorded and retryable', async () => {
@@ -598,10 +657,15 @@ test('the product manifest ships search, settings and recovery entries in one bu
   assert.equal(root.exports['./recovery'], './src/recovery.mjs');
   assert.equal(root.exports['./route-verifier'], './src/route-verifier.mjs');
   assert.equal(PRODUCT_RECOVERY_BUNDLE, PRODUCT_SEARCH_BUNDLE);
-  assert.match(rootPatch, /name: dsh-grok-search\/recovery/);
-  assert.match(rootPatch, /name: dsh-grok-search\/route-verifier/);
+  assert.match(rootPatch, /name: dsh-grok-search\s*$/);
+  assert.equal(root.exports['.'], './src/bundle.mjs');
+  assert.equal(root.exports['./search-core'], './src/index.mjs');
+  assert.equal((rootPatch.match(/- id:/g) ?? []).length, 1);
+  const bundle = readFileSync(new URL('../src/bundle.mjs', import.meta.url), 'utf8');
+  assert.match(bundle, /ctx\.plugin\(recovery\)/);
+  assert.match(bundle, /ctx\.plugin\(settings\)/);
   assert.ok(root.files.includes('src/route-verifier.mjs'));
-  assert.match(rootPatch, /name: dsh-grok-search\/control/);
+  assert.ok(root.files.includes('src/bundle.mjs'));
   assert.ok(root.files.includes('src/control.mjs'));
   assert.ok(root.files.includes('src/recovery.mjs'));
 });

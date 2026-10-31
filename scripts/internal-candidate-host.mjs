@@ -44,6 +44,7 @@ function snapshot() {
     productControl: boot?.ctx.get('grokSearchControl')?.snapshot() ?? null,
     productRecovery: boot?.ctx.get('grokSearchRecovery')?.snapshot() ?? null,
     productRouteVerifier: boot?.ctx.get('grokSearchRouteVerifier')?.snapshot() ?? null,
+    productProgram: boot?.ctx.get('grokSearchProgram')?.snapshot?.() ?? null,
     selectedBundles: JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8')).dsh?.profile?.bundles ?? [],
     webInject: [...boot.ctx.loader.entries()].find(entry => entry.options.id === 'web')?.options.inject,
     mcpEvents: mcpEvents() };
@@ -152,8 +153,12 @@ try {
   ];
   writeFileSync(join(fixturePackage, 'cordis.patch.yml'), JSON.stringify([{ insert: rows }], null, 2));
   const queryConfiguration = config.realGrok ? { executable: config.realGrok.executable, configPath: config.realGrok.configPath, budgetMs: 120_000 }
+    : productWiring ? { executable: join(directory, 'intentionally-missing-grok-program'),
+      configPath: join(directory, 'isolated-not-configured.toml'), budgetMs: 120_000 }
     : { executable: config.fixtureNode, executableArgs: [join(project, 'fixtures/internal-candidate/host-mcp.mjs'), controlPath, eventPath], budgetMs: 30_000 };
-  writeFileSync(join(profile, 'cordis.patch.yml'), JSON.stringify(productWiring ? [] : [{ id: 'grok-search-core', config: queryConfiguration }], null, 2));
+  // The shipped patch has one aggregate root. Configure that public entry;
+  // nonexistent child loader entries cannot carry execution configuration.
+  writeFileSync(join(profile, 'cordis.patch.yml'), JSON.stringify([{ id: 'grok-search', config: queryConfiguration }], null, 2));
   const appBoot = await imp('dsh-app-boot');
   const { runProfile } = await imp('dsh', 'lib/profile-boot.js');
   boot = await runProfile({ environment: appBoot.loadLayeredEnv('dsh', directory), profile: 'candidate', patchFiles: [], args: [] });

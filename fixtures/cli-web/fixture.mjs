@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 
 const ORIGINAL_SEARCH_EVENT = 'web/deepseek-search-llm-request';
@@ -175,6 +176,8 @@ function snapshot(ctx) {
     } : null,
     control,
     core,
+    program: ctx.get('grokSearchProgram')?.snapshot?.() ?? null,
+    route: ctx.get('grokSearchCore')?.routeSnapshot?.() ?? null,
     entries,
   };
 }
@@ -221,6 +224,16 @@ export async function applyObserver(ctx) {
       const input = body ? JSON.parse(body) : {};
       const work = operation.then(async () => {
         if (!input.op || input.op === 'snapshot') return snapshot(ctx);
+        if (input.op === 'read-control-record') {
+          const { createControlIntentStore } = await import('dsh-grok-search/control-intent');
+          return createControlIntentStore({ directory: join(ctx.profileContext.dir, 'control-intent.records'),
+            legacyPath: join(ctx.profileContext.dir, 'control-intent.fixture.json'), trustedRoot: ctx.profileContext.dir }).read();
+        }
+        if (input.op === 'product-query-result') {
+          const web = ctx.get('web');
+          if (!web) throw new Error('Public WebRuntime is not available.');
+          return web.search({ query: 'offline shared result budget', maxResults: 1 }, AbortSignal.timeout(5000));
+        }
         if (input.op === 'stop') {
           const control = ctx.get('grokSearchControl');
           if (!control?.stop) throw new Error('product control unavailable');

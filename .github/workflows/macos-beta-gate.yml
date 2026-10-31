@@ -8,6 +8,10 @@ on:
         required: true
         type: boolean
         default: false
+      expected_tarball_sha256:
+        description: SHA-256 of the locally frozen beta tarball; reject any different package.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -18,23 +22,36 @@ jobs:
     if: inputs.confirm_public_standard_runner
     runs-on: windows-2025
     timeout-minutes: 10
+    env:
+      EXPECTED_TARBALL_SHA256: ${{ inputs.expected_tarball_sha256 }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
       - name: Pack beta candidate
         shell: pwsh
         run: |
+          $expected = $env:EXPECTED_TARBALL_SHA256
+          if ($expected -cnotmatch '^[a-f0-9]{64}$') { throw 'Expected SHA-256 must be 64 lowercase hex characters.' }
+          npm ci --ignore-scripts --legacy-peer-deps --no-audit --no-fund --registry=https://registry.npmjs.org/
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency preparation failed.' }
+          npm run build:client
+          if ($LASTEXITCODE -ne 0) { throw 'Client build failed.' }
+          git diff --exit-code -- src/client.js
+          if ($LASTEXITCODE -ne 0) { throw 'Generated client differs from the frozen commit.' }
+          npm run test:all
+          if ($LASTEXITCODE -ne 0) { throw 'Offline gates failed.' }
           npm run pack:beta
+          if ($LASTEXITCODE -ne 0) { throw 'Beta pack failed.' }
           $tgz = Get-ChildItem -Path artifacts/beta-package -Recurse -Filter 'dsh-grok-search-0.1.0-beta.1.tgz' |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $tgz) { throw 'Beta tarball was not produced.' }
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $tgz.FullName).Hash.ToLowerInvariant()
-          if ($hash -ne 'd6a0e8a108b96a7e85fabefa84d493d651f1c9c1de2c10a86c1240effa9dfeec') {
+          if ($hash -cne $expected) {
             throw "Tarball hash changed: $hash"
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dsh-grok-search-beta-tarball
           path: |
@@ -52,11 +69,14 @@ jobs:
       LANG: zh_CN.UTF-8
       LC_ALL: zh_CN.UTF-8
       DSH_TELEMETRY_DISABLED: "1"
+      EXPECTED_TARBALL_SHA256: ${{ inputs.expected_tarball_sha256 }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
+      - name: Prepare frozen runtime and test dependencies
+        run: npm ci --ignore-scripts --legacy-peer-deps --no-audit --no-fund --registry=https://registry.npmjs.org/
       - name: Confirm Apple Silicon runner
         run: test "$(uname -m)" = arm64
       - name: Use Simplified Chinese as the runner UI language
@@ -120,10 +140,25 @@ jobs:
           });
           writeFileSync('artifacts/macos-grok-protocol/receipt.json', JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx' });
           NODE
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dsh-grok-search-beta-tarball
           path: ${{ runner.temp }}/beta
+      - name: Verify the same frozen tarball on macOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(find "$RUNNER_TEMP/beta" -name 'dsh-grok-search-0.1.0-beta.1.tgz' -print -quit)"
+          test -n "$TARBALL"
+          node --input-type=module - "$TARBALL" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const expected = process.env.EXPECTED_TARBALL_SHA256;
+          if (!/^[a-f0-9]{64}$/.test(expected ?? '')) throw new Error('Invalid expected SHA-256.');
+          const actual = createHash('sha256').update(readFileSync(process.argv[2])).digest('hex');
+          if (actual !== expected) throw new Error(`Tarball mismatch: ${actual}`);
+          console.log(`Frozen tarball: ${actual}`);
+          NODE
       - name: Download and verify official macOS builds
         shell: bash
         run: |
@@ -169,7 +204,17 @@ jobs:
           node scripts/b2-control-desktop.mjs \
             --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
-            --case m0-04
+            --case m0-04 \
+            --grok-program "$RUNNER_TEMP/grok/grok-search-rs"
+      - name: Run native hot-toggle and sources-only Desktop gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DSH_B2_TARGET_VERSIONS=0.2.1-rc.2,0.2.1-rc.3
+          node scripts/b2-control-desktop.mjs \
+            --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --case ux
       - name: Run isolated internal candidate gate
         shell: bash
         run: |
@@ -181,7 +226,7 @@ jobs:
             --package "$TARBALL" \
             --real-grok-executable "$RUNNER_TEMP/grok/grok-search-rs" \
             --real-grok-config "$RUNNER_TEMP/grok/config.toml"
-      - name: Run packaged PluginManager gate
+      - name: Run original Desktop PluginManager gate
         shell: bash
         run: |
           set -euo pipefail
@@ -193,13 +238,15 @@ jobs:
             --product-package "$TARBALL"
       - name: Preserve macOS evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-beta-evidence
           path: |
             artifacts/b2-*/**/summary.json
             artifacts/b2-plugin-manager-desktop/**/*-ui.json
             artifacts/internal-candidate-real/**/summary.json
+            artifacts/ux-lifecycle-desktop/**/summary.json
+            artifacts/ux-lifecycle-desktop/**/*sources-only*.json
             artifacts/macos-grok-protocol/receipt.json
           if-no-files-found: ignore
           retention-days: 7
@@ -251,13 +298,15 @@ jobs:
           NODE
       - name: Preserve final macOS evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-beta-final-evidence
           path: |
             artifacts/b2-*/**/summary.json
             artifacts/b2-plugin-manager-desktop/**/*-ui.json
             artifacts/internal-candidate-real/**/summary.json
+            artifacts/ux-lifecycle-desktop/**/summary.json
+            artifacts/ux-lifecycle-desktop/**/*sources-only*.json
             artifacts/macos-grok-protocol/receipt.json
             ${{ runner.temp }}/grok/stub-receipt.json
           if-no-files-found: ignore

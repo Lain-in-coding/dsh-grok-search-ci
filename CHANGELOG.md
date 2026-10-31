@@ -2,11 +2,41 @@
 
 本项目沿用语义化版本。公开 Beta 仍可能有安装、兼容和行为调整。
 
-## 0.1.0-beta.1 - 2026-10-26
+## 0.1.0-beta.1 - 待发布
 
-> 2026-10-28：候选的 Windows x64 Desktop 与 Linux x64 CLI/Web 矩阵门禁已通过；macOS Apple Silicon Desktop 尚未运行。三平台人工发布授权仍未完成。
+首个公开版本采用完整可视化配置体验；早期手工配置候选不公开发布。
+当前仍在最终同包门禁与维护者审核阶段。
 
-首个公开 Beta。用用户自己的 Grok `0.1.26` 接管 DSH 内置网页搜索；搜索失败明确报错，不自动回退官方搜索。
+### 新体验
+
+- 一个裸包名聚合插件，自动注册程序管理、搜索、接管、设置、核验和恢复；
+  不需要手填 patch、程序路径或配置路径。
+- 已有 Grok 和共享配置自动复用；缺失才下载已验证最新平台程序到 profile
+  私有缓存，不升级全局程序或创建第二份 Grok 凭据文件。
+- 完整动态路由页：官方 logo、Harness/网关横排、来源纵排、六个配置弹窗、
+  Hub、浅深主题、16px 状态条、拖放和键盘排序。
+- 共享 TOML 安全读取/CAS 最小保存、显式 Key 查看/复制、清除确认及历史恢复；
+  保存前历史可能含凭据，README 说明保护和卸载不自动清理。
+- Grok 主搜可关闭；仅补充模式和 Grok 失败时按共享来源顺序返回真实结果，
+  全部失败明确报错，不回退 DeepSeek 官方搜索。
+- 全量已开启来源/全部 Tavily Key 可取消连通性诊断，GitHub 独立检测。
+  失败保留准确短码、轻颤红边和简短提示，不伪造内部实时遥测。
+- 受管 MCP 串行复用、身份变化有序重建、空闲五分钟退出；主搜和回退共用
+  1 active/8 queued、总截止与共享 `response_max_chars`。
+- 原生 PluginManager 热停用即时恢复，再启用即时接管；整包停用时配置页离场。
+  无 HMR 的宿主如实提示需要重启，取消永久 released/删记录恢复的旧用户流程。
+
+### 当前验证边界
+
+离线全套、生产 UI 浏览器回归和 Windows 双版部分新源码门禁已经通过；
+本轮最终 tarball 的全部平台门禁、真实来源 Key/费用及人工验收尚未收齐。
+下方历史 d6a0 证据只代表旧候选，不能替代新体验版。
+正式发布将使用同一个经验证 tarball，npm `next`/`latest` 与 GitHub Pre-release
+指向同一 Beta；未执行公开发布。
+
+## 历史内部候选 d6a0 - 2026-10-29（未发布；已被新体验替代）
+
+当时的内部 Beta 候选。以下功能和限制保留为历史，不适用于当前新体验。
 
 ### 新增
 
@@ -18,7 +48,7 @@
 - 基于 DSH canonical Session 事件类型的原始官方搜索派发计数。
 - 上一进程未完成释放时的跨进程启动补完。
 - 查询容量、总预算、结果字符数、单条 MCP 消息大小和进程回收边界。
-- Windows x64 Desktop、macOS Apple Silicon Desktop、Linux x64 CLI/Web 的单包安装路径（macOS Apple Silicon 门禁仍待运行）。
+- Windows x64 Desktop、macOS Apple Silicon Desktop、Linux x64 CLI/Web 共用同一个插件包的安装路径。
 - 面向用户的完整中文 README、FAQ、错误码、数据边界和 30 秒验收步骤。
 
 ### 变更
@@ -29,19 +59,32 @@
 
 ### 验证
 
-- Windows x64 Desktop `0.2.1-rc.2`/`rc.3`：同一 tarball 的安装、启用、停用、移除和重启，以及配置重载、真实设置页停止接管通过。
-- Windows M0-04：多 Session、preset、PTC、重连和预算矩阵通过（夹具路由计数）。
-- Windows 真实 Grok `0.1.26` 上游查询通过。
-- Linux x64 CLI/Web `0.2.1-rc.3`/`rc.4`：官方 Grok `0.1.26` 二进制 MCP initialize、tools/list、查询、stdio EOF 退出、显式停止后真实官方 provider 的 canonical 派发计数、配置重载过渡无官方回退，以及 PluginManager 停用/重启/重新启用/移除生命周期通过。Web 设置页浏览器 DOM 未验证；HTTP 上游、模型和 fetch 为本地 stub，不等于真实付费上游验收。
-- 白名单打包、复打包哈希一致、依赖审计和敏感信息扫描通过。
+以下结果都针对同一个 tarball：`dsh-grok-search-0.1.0-beta.1.tgz`，SHA-256 `d6a0e8a108b96a7e85fabefa84d493d651f1c9c1de2c10a86c1240effa9dfeec`。
+
+- Windows x64 Desktop `0.2.1-rc.2`/`rc.3`：
+  - 干净安装 `2026-10-29T10-46-21.436Z-4216`，2/0；
+  - PluginManager 安装、启用、停用、移除、重启和真实设置页停止接管（含界面 DOM）`2026-10-29T10-47-36.355Z-37792`，2/0；
+  - 产品 Desktop（官方 provider 派发计数、配置重载过渡无官方回退、释放事务）`2026-10-29T10-51-23.657Z-37184`，12/0；
+  - 多 Session、preset、PTC、重连和预算矩阵 `2026-10-29T11-01-24.146Z-30368`，8/0，路由计数为夹具；
+  - 真实 Grok `0.1.26` 上游查询 `2026-10-28T12-20-06.168Z-237772`，4/0（每版一次真实查询）。这次运行用的是上一个候选包，和本包只差 `README.md` 与 `support-matrix.json`，其余 20 个文件逐字节相同。
+- macOS Apple Silicon Desktop `0.2.1-rc.2`/`rc.3`，公开 CI [40859735044](https://github.com/Lain-in-coding/dsh-grok-search-ci/actions/runs/40859735044)（GitHub 托管 macOS 15 arm64 runner）：
+  - 干净安装 `2026-10-29T10-58-09.803Z-17308`，2/0；
+  - 产品 Desktop `2026-10-29T10-58-20.902Z-17523`，12/0；
+  - 多 Session 矩阵 `2026-10-29T11-01-52.616Z-22223`，8/0，路由计数为夹具；
+  - Grok `0.1.26` Darwin 程序对本机模拟上游的 MCP 查询 `2026-10-29T11-03-33.001Z-24650`，4/0，只用合成 Key；
+  - PluginManager 与真实设置页停止接管（含界面 DOM）`2026-10-29T11-03-48.646Z-24916`，2/0。
+- Linux x64 CLI/Web（WSL Ubuntu 22.04）`0.2.1-rc.2` `20261029T103154354Z-rc2-02a31428`、`rc.3` `20261029T103405266Z-rc3-16bd5f2c`、`rc.4` `20261029T103914454Z-rc4-01632517`，各 133/133：隔离安装与逐文件核对、搜索/fetch/聊天、官方 Grok `0.1.26` Linux 程序对本机模拟上游的 MCP 查询、配置重载过渡无官方回退、Web 设置页停止接管、PluginManager 停用/重启/重新启用/移除、官方 provider 派发计数与进程回收。
+- 离线测试 `npm run test:all` 通过（Windows 上有 1 个 POSIX 符号链接用例按设计跳过）；白名单打包与复打包哈希一致；生产依赖审计 0 项；tarball 敏感信息扫描 0 命中。
+- 宿主没有 release 专属完成事件。释放按复合证据判定，不冒充宿主回执。
 
 ### 已知限制
 
-- Windows x64 Desktop 与 Linux x64 CLI/Web 目标矩阵已通过隔离宿主门禁；macOS Apple Silicon Desktop 尚未运行门禁。不承诺 macOS Intel Desktop 或官方 Linux Desktop。
+- 只承诺 README「支持范围」表里列出的系统、入口和 DSH 版本组合。不支持 macOS Intel、Windows ARM、官方 Linux Desktop、Windows/macOS 上的 CLI/Web 和 DSH alpha 版本。
+- DSH 升级到插件版本范围以外后，DSH 启动时会跳过本插件，搜索按原设置回到 DSH 自带搜索，界面可能没有提示。
 - 不支持源码 live HMR，停用、升级或移除后需要完整重启 DSH。
 - 停止接管后没有「恢复接管」按钮。
 - 卸载不清理 profile 内的 `control-intent.records`。
-- 跨资源提交崩溃、完整在途事务和官方联网 fetch 未覆盖。
+- 跨资源提交崩溃、完整在途事务、官方联网 fetch，以及 macOS/Linux 上的真实付费上游未覆盖。
 - 宿主没有 release 专属完成事件，释放按复合证据判定。
 
 完整的安装、配置、失败行为和限制见 [README](./README.md)。

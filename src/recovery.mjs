@@ -129,7 +129,11 @@ export function apply(ctx) {
   });
   ctx.on('app-boot/config-reload', () => background('config-reload'));
   ctx.on('plugin-manager/changed', () => background('manager-change'));
-  ctx.inject(['web'], () => background('legal-web-activation'));
+  // A single aggregate bundle starts control and recovery concurrently. Wait
+  // for the owner service before the first observation; otherwise recovery can
+  // race the owner's initial CAS and permanently cache a false `no-record`
+  // state, leaving startup without the expected still-selected receipt.
+  ctx.inject(['web', 'grokSearchControl'], () => background('legal-web-activation'));
   ctx.effect(() => () => {
     disposed = true;
     state.phase = 'disposed';

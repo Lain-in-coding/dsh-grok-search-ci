@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -28,12 +28,29 @@ if (!existsSync(productTarball)) throw new Error('Package tarball is missing: ' 
 const { runId, directory } = freshRun('b2-plugin-manager-desktop');
 const temporary = join(tmpdir(), 'dsh-deferred-desktop-manager-' + runId);
 const replacements = [[temporary, '<TEMPORARY_RUN>'], [dirname(productTarball), '<PRODUCT_PACKAGE>'],
+  [dirname(process.execPath), '<NODE_INSTALL>'],
   ...runtimes.map(runtime => [dirname(runtime.executable), `<DESKTOP_${runtime.app.version}>`])];
 const sanitize = value => redact(String(value), replacements);
 const safe = value => JSON.parse(sanitize(JSON.stringify(value)));
 const sleep = milliseconds => new Promise(done => setTimeout(done, milliseconds));
+const runtimeFiles = folder => readdirSync(join(project, folder), { withFileTypes: true }).flatMap(row =>
+  row.isDirectory() ? runtimeFiles(folder + '/' + row.name) : [folder + '/' + row.name]);
+const sourceHashesBefore = [...new Set([...runtimeFiles('src'), 'package.json', 'cordis.patch.yml',
+  'fixtures/deferred-release/desktop-fixture.mjs', 'fixtures/internal-candidate/host-fixture.mjs',
+  'scripts/deferred-release-desktop-prepare.mjs', 'scripts/lib/renderer-cdp.mjs', 'scripts/b2-plugin-manager-desktop.mjs'])]
+  .map(file => ({ file, sha256: sha256(join(project, file)) }));
+const expectedProductReceipt = packageReceipt(productTarball);
+for (const row of expectedProductReceipt.sourceHashes) {
+  assert.equal(sha256(join(project, row.file)), row.sha256, 'Frozen package source differs: ' + row.file);
+}
 const results = [], children = [];
 let serial = 0, currentVersion = null;
+function protocolAssociation() {
+  if (process.platform !== 'win32') return null;
+  const ps = process.env.SystemRoot + '/System32/WindowsPowerShell/v1.0/powershell.exe';
+  const script = "$k=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\\Classes\\dsh\\shell\\open\\command');if($null -eq $k){Write-Output '<absent>'}else{Write-Output ([string]$k.GetValue(''));$k.Close()}";
+  return commandResult(ps, ['-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 10000, sanitize: value => String(value) });
+}
 
 function packageReceipt(tarball) {
   const file = join(dirname(tarball), 'package-receipt.json');
@@ -72,6 +89,85 @@ async function rendererSnapshot(host) {
   } finally {
     renderer.close();
   }
+}
+
+// Only synthetic credentials in the fresh isolated profile. Never returns the
+// key, response body, cookie or auth URL to evidence output.
+async function settingsRpcSecurityFlow(host) {
+  const renderer = await connectRenderer(host.debuggerPort);
+  try {
+    const evidence = await renderer.evaluate(`(async () => {
+      const call = async (method, request, extraHeaders = {}, credentials = 'same-origin') => {
+        const response = await fetch('/api/grokSearchSettings/' + method, {
+          method: 'POST', credentials,
+          headers: { 'Content-Type': 'application/json', ...extraHeaders },
+          body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(),
+            method: 'grokSearchSettings/' + method,
+            payload: { args: request === undefined ? {} : { request } } }),
+        });
+        let body; try { body = await response.json(); } catch { body = {}; }
+        return { status: response.status, result: body.result };
+      };
+      const initial = await call('snapshot');
+      if (!initial.result?.ok) return { snapshotOk: false, status: initial.status,
+        code: initial.result?.error?.code ?? null };
+      const before = initial.result.value;
+      if (before.config.fields.grok_api_key.configured) throw new Error('Isolated credential was unexpectedly configured.');
+      const sentinel = 'dsh-offline-settings-sentinel';
+      const saved = await call('save', { expectedRevision: before.config.revision,
+        updates: { grok_api_key: sentinel } });
+      if (!saved.result?.ok) return { snapshotOk: true, capabilities: before.capabilities,
+        saveOk: false, code: saved.result?.error?.code ?? null };
+      try {
+        const redacted = await call('snapshot');
+        const reveal = await call('reveal', { key: 'grok_api_key' });
+        const forwarded = await call('reveal', { key: 'grok_api_key' }, { 'X-Forwarded-Proto': 'https' });
+        const restrictedSnapshot = await call('snapshot', undefined, { 'X-Forwarded-Proto': 'https' });
+        const deniedSave = await call('save', { expectedRevision: saved.result.value.config.revision,
+          updates: { grok_api_key: 'must-not-be-written' } }, { 'X-Forwarded-Proto': 'https' });
+        const unauthenticated = await call('reveal', { key: 'grok_api_key' }, {}, 'omit');
+        return { snapshotOk: true, saveOk: true, capabilities: before.capabilities,
+          redacted: redacted.result?.ok === true && !JSON.stringify(redacted.result.value).includes(sentinel),
+          revealMatches: reveal.result?.ok === true && reveal.result.value.value === sentinel,
+          forwardedDenied: forwarded.result?.ok !== true && !JSON.stringify(forwarded).includes(sentinel),
+          forwardedCode: forwarded.result?.error?.code ?? null,
+          restrictedSnapshotOk: restrictedSnapshot.result?.ok === true
+            && restrictedSnapshot.result.value.capabilities.secretsAllowed === false,
+          deniedSave: deniedSave.result?.ok !== true,
+          deniedSaveCode: deniedSave.result?.error?.code ?? null,
+          rendererCookieOmissionDenied: unauthenticated.result?.ok !== true
+            && !JSON.stringify(unauthenticated).includes(sentinel),
+        };
+      } finally {
+        const current = await call('snapshot');
+        if (!current.result?.ok) throw new Error('Cannot read temporary config for cleanup.');
+        const restored = await call('save', { expectedRevision: current.result.value.config.revision,
+          updates: { grok_api_key: null } });
+        if (!restored.result?.ok || restored.result.value.config.fields.grok_api_key.configured)
+          throw new Error('Temporary credential cleanup failed.');
+      }
+    })()`);
+    // Electron may supply trusted authentication independently of fetch's
+    // cookie option. Test a genuinely unauthenticated client outside Electron.
+    const unauthenticated = await fetch(host.readAddress().hostOrigin + '/api/grokSearchSettings/reveal', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'client-request', rpcId: randomUUID(),
+        method: 'grokSearchSettings/reveal', payload: { args: { request: { key: 'grok_api_key' } } } }),
+      signal: AbortSignal.timeout(10000),
+    });
+    evidence.unauthenticatedStatus = unauthenticated.status;
+    evidence.unauthenticatedDenied = [401, 403].includes(unauthenticated.status);
+    await unauthenticated.body?.cancel();
+    writeJson(join(directory, currentVersion + '-settings-rpc-security.json'), safe(evidence));
+    for (const key of ['snapshotOk', 'saveOk', 'redacted', 'revealMatches', 'forwardedDenied',
+      'restrictedSnapshotOk', 'deniedSave', 'unauthenticatedDenied']) {
+      assert.equal(evidence[key], true, `Settings RPC security check ${key}: ${JSON.stringify(evidence)}`);
+    }
+    assert.equal(evidence.capabilities.transport, 'loopback');
+    assert.equal(evidence.forwardedCode, 'SETTINGS_SECURE_CONNECTION_REQUIRED');
+    assert.equal(evidence.deniedSaveCode, 'SETTINGS_SECURE_CONNECTION_REQUIRED');
+    return evidence;
+  } finally { renderer.close(); }
 }
 
 async function pluginManagerRendererSnapshot(host) {
@@ -146,152 +242,153 @@ async function pluginManagerRendererSnapshot(host) {
   }
 }
 
-async function settingsStopRendererFlow(host) {
+async function settingsStopRendererFlow(host, phase) {
   const renderer = await connectRenderer(host.debuggerPort);
   try {
-    const dumpConsole = async note => {
-      try {
-        await renderer.evaluate('1');
-        writeJson(join(directory, currentVersion + '-settings-console.json'), safe({ note, entries: renderer.consoleEntries }));
-      } catch {}
-    };
-    const beforeMore = await renderer.evaluate(`(() => ({
-      text: document.body.innerText,
-      buttons: [...document.querySelectorAll('button,[role="button"],[role="menuitem"]')]
-        .map(item => ({ text: (item.innerText || '').trim(), aria: item.getAttribute('aria-label') }))
-        .filter(item => item.text || item.aria),
-    }))()`);
-    writeJson(join(directory, currentVersion + '-settings-before-more-ui.json'), safe(beforeMore));
-    assert.ok(beforeMore.buttons.some(item => item.text === '更多' || item.aria === '更多'),
-      'More button was absent: ' + JSON.stringify(beforeMore.buttons));
-    // The sidebar can still be on the Plugin Manager page; return to the main shell first.
-    if (beforeMore.buttons.some(item => item.aria === '返回插件列表')) {
-      await renderer.evaluate(`(() => {
-        const back = [...document.querySelectorAll('button')]
-          .find(item => item.getAttribute('aria-label') === '返回插件列表');
-        back.click();
-      })()`);
-      const backToMain = await waitForRenderer(renderer, current => current.evaluate(`(() => {
-        const buttons = [...document.querySelectorAll('button')];
-        return buttons.some(item => item.getAttribute('aria-label') === '账号菜单') ? {
-          text: document.body.innerText,
-          buttons: buttons.map(item => ({ text: (item.innerText || '').trim(), aria: item.getAttribute('aria-label') }))
-            .filter(item => item.text || item.aria),
-        } : null;
-      })()`), 'Main shell did not return from Plugin detail', 10000);
-      writeJson(join(directory, currentVersion + '-settings-after-back-ui.json'), safe(backToMain));
-    }
-    await renderer.evaluate(`(() => {
-      const buttons = [...document.querySelectorAll('button')];
-      const button = buttons.find(item => item.getAttribute('aria-label') === '账号菜单')
-        ?? buttons.find(item => (item.innerText || '').trim() === '更多');
-      if (!button) throw new Error('More button was not found after returning to the shell.');
-      button.click();
-    })()`);
-    const moreMenu = await waitForRenderer(renderer, current => current.evaluate(`(() => {
-      const text = document.body?.innerText ?? '';
-      return /设置|Settings/.test(text) ? {
-        text,
-        buttons: [...document.querySelectorAll('button,[role="menuitem"],[role="button"],a')]
-          .map(item => ({ text: (item.innerText || '').trim(), aria: item.getAttribute('aria-label'), role: item.getAttribute('role') }))
-          .filter(item => item.text || item.aria),
-      } : null;
-    })()`), 'More menu did not expose a settings entry', 10000);
-    writeJson(join(directory, currentVersion + '-settings-more-menu-ui.json'), safe(moreMenu));
-    const menuObserved = await waitForRenderer(renderer, current => current.evaluate(`(() => {
-      const item = [...document.querySelectorAll('button,[role="menuitem"],[role="button"]')]
-        .find(row => /设置|Settings/.test((row.getAttribute('aria-label') || row.innerText || '').trim()));
-      return item ? true : null;
-    })()`), 'Settings entry did not appear in the More menu', 10000);
-    await renderer.evaluate(`(() => {
-      const item = [...document.querySelectorAll('button,[role="menuitem"],[role="button"]')]
-        .find(row => /设置|Settings/.test((row.getAttribute('aria-label') || row.innerText || '').trim()));
-      item.click();
-    })()`);
-    const pluginsSectionObserved = await waitForRenderer(renderer, current => current.evaluate(
-      `[...document.querySelectorAll('button,[role="tab"]')].some(item => (item.getAttribute('aria-label') || item.innerText || '').trim() === '内置插件')`),
-      'Settings Plugins section did not appear', 20000);
-    assert.equal(pluginsSectionObserved, true);
-    const settingsEntry = await renderer.evaluate(`(() => ({
-      text: document.body.innerText,
-      tabs: [...document.querySelectorAll('button,[role="tab"]')]
-        .map(item => ({ text: (item.innerText || '').trim(), aria: item.getAttribute('aria-label') }))
-        .filter(item => item.text || item.aria),
-    }))()`);
-    writeJson(join(directory, currentVersion + '-settings-sections-ui.json'), safe(settingsEntry));
-    await renderer.evaluate(`(() => {
-      const section = [...document.querySelectorAll('button,[role="tab"]')]
-        .find(item => (item.getAttribute('aria-label') || item.innerText || '').trim() === '内置插件');
-      if (!section) throw new Error('Settings Plugins section was absent when clicked.');
-      section.click();
-    })()`);
-    const pluginsPage = await waitForRenderer(renderer, current => current.evaluate(
-      `/插件视图|Plugin views|暂无插件|No matching plugins|Grok 搜索/i.test(document.body?.innerText ?? '')`),
-      'Settings Plugins page did not render its tabs', 10000);
-    const pluginsPageView = await renderer.evaluate(`(() => ({
-      text: document.body.innerText,
-      tabs: [...document.querySelectorAll('button,[role="tab"]')]
-        .map(item => ({ text: (item.innerText || '').trim(), aria: item.getAttribute('aria-label') }))
-        .filter(item => item.text || item.aria),
-    }))()`);
-    writeJson(join(directory, currentVersion + '-settings-plugins-page-ui.json'), safe(pluginsPageView));
-    const grokTabObserved = await waitForRenderer(renderer, current => current.evaluate(
-      `[...document.querySelectorAll('button,[role="tab"]')].some(item => (item.getAttribute('aria-label') || item.innerText || '').trim() === 'Grok 搜索')`),
-      'Grok tab did not appear in Settings Plugins after selecting the section', 10000);
-    assert.equal(grokTabObserved, true);
-    await renderer.evaluate(`(() => {
-      const tab = [...document.querySelectorAll('button,[role="tab"]')]
-        .find(item => (item.getAttribute('aria-label') || item.innerText || '').trim() === 'Grok 搜索');
-      if (!tab) throw new Error('Grok settings tab was absent when clicked.');
-      tab.click();
-    })()`);
-    const detailBeforeStop = await waitForRenderer(renderer, current => current.evaluate(`(() => {
-      const loading = document.querySelector('[data-grok-search-loading]');
-      if (loading) return { loading: true, text: loading.innerText };
-      const error = document.querySelector('[data-grok-search-error]');
-      if (error) return { failed: true, text: error.innerText };
-      const root = document.querySelector('[data-grok-search-settings]');
-      if (!root) return null;
+    let v74Detail;
+    try {
+      v74Detail = await waitForRenderer(renderer, current => current.evaluate(`(() => {
+      const mount = document.querySelector('[data-dsg-route]');
+      const root = mount?.shadowRoot?.querySelector('.dsg-root');
+      if (!root?.querySelector('#routeCard') || root.querySelector('#routeCard').dataset.s === 'load') return null;
       return {
         detail: true,
-        text: document.body.innerText,
-        buttons: [...document.querySelectorAll('button,[role="button"]')]
-          .map(item => ({ text: (item.innerText || '').trim(), aria: item.getAttribute('aria-label') }))
-          .filter(item => item.text || item.aria),
+        text: root.innerText,
+        route: Boolean(root.querySelector('#routeCard')),
+        providers: root.querySelectorAll('.row[data-id]').length,
+        testButton: root.querySelector('#testBtn')?.textContent.includes('测试搜索') === true,
+        configPath: root.querySelector('#cfgPath')?.textContent ?? null,
+        state: root.querySelector('#routeCard')?.dataset.s,
+        shadowIsolated: mount.shadowRoot !== null && document.querySelector('#routeCard') === null,
       };
-    })()`), 'Grok settings tab did not appear in Settings Plugins', 30000);
-    if (detailBeforeStop?.failed) {
-      await dumpConsole('snapshot-failed');
-      throw new Error('Grok settings snapshot failed: ' + detailBeforeStop.text);
+    })()`), { timeoutMs: 30000 });
+    } catch (error) {
+      writeJson(join(directory, `${currentVersion}-${phase}-settings-v74-failure.json`), safe({
+        error: error.message,
+        body: await renderer.evaluate('document.body?.innerText ?? ""'),
+        console: renderer.consoleEntries,
+        exceptions: renderer.exceptions,
+        clientLoaded: await renderer.evaluate('Boolean(document.querySelector("[data-dsg-route]")?.shadowRoot)'),
+      }));
+      throw error;
     }
-    writeJson(join(directory, currentVersion + '-settings-stop-entry-ui.json'), safe(detailBeforeStop));
-    const before = await waitForRenderer(renderer, current => current.evaluate(`(() => {
-      const root = document.querySelector('[data-grok-search-settings]');
-      if (!root) return null;
-      const button = [...root.querySelectorAll('button')]
-        .find(item => (item.innerText || '').trim() === '停止接管并恢复原搜索');
-      return button ? { text: root.innerText, buttonFound: true, buttonDisabled: button.disabled === true } : null;
-    })()`), 'Grok settings panel disappeared before reading its stop button', 10000);
-    const clicked = await renderer.evaluate(`(() => {
-      const root = document.querySelector('[data-grok-search-settings]');
-      const button = [...root.querySelectorAll('button')]
-        .find(item => (item.innerText || '').trim() === '停止接管并恢复原搜索');
-      if (!button) return false;
-      button.click();
-      return true;
-    })()`);
-    await waitForRenderer(renderer, current => current.evaluate(`(() => {
-      const root = document.querySelector('[data-grok-search-settings]');
-      return root && /已恢复原搜索|Original search restored/.test(root.innerText) ? true : null;
-    })()`), 'Settings stop did not restore the original search state', 30000);
-    const after = await renderer.evaluate(`(() => {
-      const root = document.querySelector('[data-grok-search-settings]');
-      return { text: root.innerText, error: root.querySelector('[role="alert"]')?.textContent ?? null };
-    })()`);
-    return { before, clicked, after, buttonFound: before.buttonFound };
+    writeJson(join(directory, `${currentVersion}-${phase}-settings-v74-ui.json`), safe(v74Detail));
+    assert.equal(v74Detail.route, true);
+    assert.ok(v74Detail.providers >= 6);
+    assert.equal(v74Detail.testButton, true);
+    assert.equal(v74Detail.shadowIsolated, true);
+    // D-29: the plugin detail page is the only settings surface and the native
+    // PluginManager switch is the only stop control; there is no stop button.
+    return { detail: v74Detail, nativeSwitchManagedByHost: true, buttonFound: false, after: v74Detail };
   } finally {
     renderer.close();
   }
+}
+
+async function settingsDialogRendererFlow(host) {
+  const renderer = await connectRenderer(host.debuggerPort);
+  const q = selector => `(() => {
+    const roots = [document.querySelector('[data-dsg-route]')?.shadowRoot,
+      document.querySelector('[data-dsg-layer]')?.shadowRoot];
+    return roots.map(root => root?.querySelector(${JSON.stringify(selector)})).find(Boolean);
+  })()`;
+  const click = selector => renderer.evaluate(`(() => { const element=${q(selector)};
+    if (!element || element.disabled) return false; element.click(); return true; })()`);
+  const value = (selector, text) => renderer.evaluate(`(() => { const input=${q(selector)};
+    if (!input || input.readOnly) return false;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(text)});
+    input.dispatchEvent(new Event('input',{bubbles:true,composed:true})); return true; })()`);
+  const closed = () => waitForRenderer(renderer, current => current.evaluate(`Boolean(${q('#overlay')}?.hidden)`));
+  const snapshot = () => renderer.evaluate(`(async () => {
+    const response=await fetch('/api/grokSearchSettings/snapshot',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'client-request',rpcId:crypto.randomUUID(),
+        method:'grokSearchSettings/snapshot',payload:{args:{}}})});
+    const data=await response.json();
+    if (!data.result?.ok) throw new Error(data.result?.error?.code || 'snapshot failed');
+    return data.result.value;
+  })()`);
+  const tests = [];
+  const check = (name, actual, expected = true) => {
+    tests.push({ name, passed: JSON.stringify(actual) === JSON.stringify(expected) });
+    assert.deepEqual(actual, expected, `Settings dialog check: ${name}`);
+  };
+  try {
+    // All data below lives in the fresh, isolated profile. Never starts a
+    // provider test or sends a synthetic credential to an external service.
+    // The prior security probe writes via raw RPC outside the UI. Let the
+    // controller poll observe its final revision before starting a key edit;
+    // a stale secret revision is intentionally never auto-rebased.
+    await waitForRenderer(renderer, current => current.evaluate(`${q('#cfgTag')}?.textContent === 'Grok 共享配置'`));
+    check('open Grok card', await click('.row[data-id=grok] .row-main'));
+    check('fill synthetic key', await value('input[data-k=key]', 'dsh-offline-ui-key'));
+    check('fill model', await value('input[data-k=model]', 'grok-ui-test-model'));
+    check('save through production RPC adapter', await click('[data-a=save]'));
+    await closed();
+    const configured = await snapshot();
+    check('key redacted/configured', configured.config.fields.grok_api_key.configured);
+    check('key absent from ordinary snapshot', !JSON.stringify(configured).includes('dsh-offline-ui-key'));
+    check('model persisted', configured.config.fields.grok_model.value, 'grok-ui-test-model');
+    check('card reopen', await click('.row[data-id=grok] .row-main'));
+    check('reopened key starts hidden', await renderer.evaluate(`${q('input[data-k=key')}?.value`), '');
+    check('eye invokes reveal', await click('[data-a=eye][data-k=key]'));
+    await waitForRenderer(renderer, current => current.evaluate(`${q('input[data-k=key')}?.type === 'text'
+      && ${q('input[data-k=key')}?.value === 'dsh-offline-ui-key'`));
+    check('reveal does not dirty draft', await renderer.evaluate(`${q('[data-a=save]')}?.disabled`));
+    check('close reveal', await click('[data-a=cancel]')); await closed();
+    check('open Hub', await click('#nodeHub'));
+    check('change shared timeout', await value('input[data-k=timeout]', '65'));
+    check('save Hub shared setting', await click('[data-a=save]')); await closed();
+    check('Hub persisted', (await snapshot()).config.fields.timeout_seconds.value, 65);
+    check('open Hub advanced', await click('#nodeHub'));
+    check('expand advanced', await click('[data-a=adv]'));
+    check('program path read-only', await renderer.evaluate(`${q('input[data-k=exeOverride')}?.readOnly`));
+    check('config path read-only', await renderer.evaluate(`${q('input[data-k=cfgOverride')}?.readOnly`));
+    check('budget read-only', await renderer.evaluate(`${q('input[data-k=budget')}?.readOnly`));
+    check('close advanced', await click('[data-a=cancel]')); await closed();
+    check('open TinyFish', await click('.row[data-id=tinyfish] .row-main'));
+    check('TinyFish search URL exists', await renderer.evaluate(`Boolean(${q('input[data-k=searchUrl]')})`));
+    check('TinyFish fetch URL exists', await renderer.evaluate(`Boolean(${q('input[data-k=fetchUrl]')})`));
+    check('TinyFish unconfigured switch off', await renderer.evaluate(`${q('.head-switch .switch')}?.getAttribute('aria-checked')`), 'false');
+    check('close TinyFish', await click('[data-a=cancel]')); await closed();
+    check('keyboard Alt reorder', await renderer.evaluate(`(() => {
+      const main=${q('.row[data-id=exa] .row-main')};
+      main.focus(); main.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',altKey:true,bubbles:true,composed:true}));
+      return true;
+    })()`));
+    await waitForRenderer(renderer, current => current.evaluate(`${q('#rowsSupp .row')}?.dataset.id === 'exa'`));
+    check('reorder writes shared source list', (await snapshot()).config.fields.source_providers.value[0], 'exa');
+    check('Grok card clear', await click('.row[data-id=grok] .row-main'));
+    check('arm clear', await click('[data-a=clear]'));
+    check('confirm clear', await click('[data-a=clear]')); await closed();
+    check('clear removed key', (await snapshot()).config.fields.grok_api_key.configured, false);
+    check('history undo button', await click('.t-act'));
+    await waitForRenderer(renderer, async () => (await snapshot()).config.fields.grok_api_key.configured);
+    check('real history undo restores model', (await snapshot()).config.fields.grok_model.value, 'grok-ui-test-model');
+    // Remove just this probe's synthetic credential. No test/diagnostic call.
+    const current = await snapshot();
+    const cleared = await renderer.evaluate(`(async () => {
+      const response=await fetch('/api/grokSearchSettings/save',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({type:'client-request',rpcId:crypto.randomUUID(),method:'grokSearchSettings/save',
+          payload:{args:{request:{expectedRevision:${JSON.stringify(current.config.revision)},updates:{grok_api_key:null,grok_model:null,timeout_seconds:null}}}}})});
+      return (await response.json()).result?.ok === true;
+    })()`);
+    check('cleanup only probe-owned config values', cleared);
+    const evidence = { passed: tests.length, failed: 0, tests, syntheticCredentialsOnly: true,
+      paidProviderRequests: false, exceptions: renderer.exceptions };
+    writeJson(join(directory, currentVersion + '-settings-v74-dialog-flow.json'), safe(evidence));
+    return evidence;
+  } catch (error) {
+    writeJson(join(directory, currentVersion + '-settings-v74-dialog-failure.json'), safe({
+      message: error.message, tests, exceptions: renderer.exceptions,
+      operationError: await renderer.evaluate(`${q('.save-error')}?.textContent ?? null`),
+      validationErrors: await renderer.evaluate(`(() => {
+        const dialog=${q('#dialog')}; return [...(dialog?.querySelectorAll('.f-msg:not([hidden])') || [])]
+          .map(element=>element.textContent);
+      })()`),
+    }));
+    throw error;
+  } finally { renderer.close(); }
 }
 
 function auditCounterSource(runtime) {
@@ -324,7 +421,7 @@ async function unusedPort() {
 
 async function prepare(runtime, folder) {
   const args = [join(project, 'scripts/deferred-release-desktop-prepare.mjs'), '--desktop', runtime.executable,
-    '--run-root', folder, '--control-record-mode', 'versioned', '--entry-mode', 'plugin-manager'];
+    '--run-root', folder, '--control-record-mode', 'versioned', '--entry-mode', 'plugin-manager-live'];
   const execution = await commandResult(process.execPath, args, { cwd: project, timeoutMs: 120000, sanitize });
   writeJson(join(directory, runtime.app.version + '-prepare.json'), receipt(execution));
   assert.equal(execution.exitCode, 0, execution.stderr);
@@ -336,12 +433,22 @@ async function prepare(runtime, folder) {
 
 async function start(runtime, folder, phase) {
   const control = JSON.parse(readFileSync(join(folder, 'local-control.json'), 'utf8'));
+  // Windows packaged startup registers dsh:// globally before our fixture can
+  // intervene. Use the shipped default_app + original ASAR, as the other
+  // isolated Desktop gates do. No host code, binary or association is changed.
+  const executable = process.platform === 'win32' ? control.electron : runtime.executable;
   const debuggerPort = await unusedPort();
   const addressPath = join(folder, 'address-' + (++serial) + '.json');
-  const args = ['--user-data-dir=' + control.userData, '--remote-debugging-address=127.0.0.1',
+  const args = [...(process.platform === 'win32' ? [runtime.archivePath] : []),
+    '--user-data-dir=' + control.userData, '--remote-debugging-address=127.0.0.1',
     '--remote-debugging-port=' + debuggerPort, '--lang=zh-CN'];
   const env = cleanEnvironment(folder, {
     DSH_HOME: control.dshHome,
+    ...(process.platform === 'win32' ? {
+      DSH_DESKTOP_DSH_DIR: control.runtime,
+      DSH_DESKTOP_PRIMARY_RUNTIME_DIR: control.primaryRuntime,
+      DSH_DESKTOP_PNPM_ENTRY: control.pnpmEntry,
+    } : {}),
     DSH_DESKTOP_FIXTURE_TOKEN: control.token,
     DSH_DESKTOP_FIXTURE_ADDRESS_FILE: addressPath,
     DSH_DESKTOP_OPEN_DEVTOOLS: '0',
@@ -361,11 +468,13 @@ async function start(runtime, folder, phase) {
   const stderrPath = join(directory, prefix + '-stderr.log');
   const stdout = openSync(stdoutPath, 'wx'), stderr = openSync(stderrPath, 'wx');
   writeJson(join(directory, prefix + '-command.json'), safe({
-    executable: runtime.executable, args, cwd: folder,
+    executable, args, cwd: folder,
     environment: Object.fromEntries(Object.entries(env).filter(([name]) => name.startsWith('DSH_') || name.startsWith('PNPM_') || name === 'NODE_OPTIONS')),
-    packagedStartup: true, originalAsar: true, isolatedUserData: true, startedAt: new Date().toISOString(),
+    packagedStartup: process.platform !== 'win32', originalAsar: true, isolatedUserData: true,
+    startupMode: process.platform === 'win32' ? 'official-default-app-with-original-asar' : 'packaged-app',
+    startedAt: new Date().toISOString(),
   }));
-  const child = spawn(runtime.executable, args, { cwd: folder, env, windowsHide: true, shell: false,
+  const child = spawn(executable, args, { cwd: folder, env, windowsHide: true, shell: false,
     stdio: ['ignore', stdout, stderr] });
   closeSync(stdout); closeSync(stderr);
   const state = { prefix, child, folder, control, debuggerPort, exited: false, spawnError: null };
@@ -530,52 +639,54 @@ function managerNames(state) {
   return state.bundles.map(bundle => bundle.name);
 }
 
-function assertManagerApplied(result, target, application = 'restart-required') {
+function assertManagerApplied(result, target, application = 'applied') {
   assert.equal(result.application, application, JSON.stringify(result));
   assert.equal(result.changed, true, JSON.stringify(result));
   assert.equal(result.target, target, JSON.stringify(result));
   assert.equal(result.error ?? null, null, JSON.stringify(result));
 }
 
-async function mutateWithObservation(host, op, args, observe, label) {
-  try {
-    return await host.probeMutation(op, args);
-  } catch (error) {
-    if (error.transportLost !== true) throw error;
-    await host.reconnect(error.previousAddress);
-    const observed = await observe();
-    if (!observed) throw new Error(label + ' could not be confirmed after the Host probe reconnected.');
-    return observed;
-  }
-}
-
 async function installBundle(host, spec, name) {
-  return mutateWithObservation(host, 'plugin-manager-install', { spec, enabled: true, requestId: randomUUID() },
-    async () => {
-      const state = await host.probe('plugin-manager-state');
-      const row = state.bundles.find(bundle => bundle.name === name);
-      return row?.enabled === true ? { application: 'restart-required', changed: true, target: name, bundle: name,
-        enabled: true, transportLost: true, recoveredByObservation: true } : null;
-    }, 'Install of ' + name);
+  return nativeManagerRpc(host, 'installBundle', { spec, options: { enabled: true, requestId: randomUUID() } });
 }
 
 async function setBundleEnabled(host, name, enabled) {
-  return mutateWithObservation(host, 'plugin-manager-set-bundle', { name, enabled },
-    async () => {
-      const state = await host.probe('plugin-manager-state');
-      const row = state.bundles.find(bundle => bundle.name === name);
-      return row?.enabled === enabled ? { application: 'restart-required', changed: true, target: name,
-        enabled, transportLost: true, recoveredByObservation: true } : null;
-    }, (enabled ? 'Enable of ' : 'Disable of ') + name);
+  return nativeManagerRpc(host, 'setBundleEnabled', { name, enabled });
 }
 
 async function removeBundle(host, name) {
-  return mutateWithObservation(host, 'plugin-manager-remove', { name },
-    async () => {
-      const state = await host.probe('plugin-manager-state');
-      return state.bundles.some(bundle => bundle.name === name) ? null : { application: 'restart-required', changed: true,
-        target: name, stage: 'remove', transportLost: true, recoveredByObservation: true };
-    }, 'Removal of ' + name);
+  return nativeManagerRpc(host, 'removeBundle', { name });
+}
+
+async function nativeManagerRpc(host, method, args) {
+  // Calling from the fixture's own HTTP handler deadlocks when pnpm/HMR
+  // replaces that fixture and its disposer waits for the outstanding handler.
+  // Use the authenticated first-party RPC transport and keep probes read-only.
+  const renderer = await connectRenderer(host.debuggerPort, { requestTimeoutMs: 180000 });
+  try {
+    // A freshly started host answers /api only after the renderer finished its
+    // own boot; an early call returned an empty body (run 18-43-11.877Z-1756).
+    await waitForRenderer(renderer, async current => {
+      const ready = await current.evaluate(`document.readyState === 'complete'
+        && document.body?.innerText?.trim().length > 0
+        && !/Loading plugins|正在加载插件/i.test(document.body.innerText)`);
+      return ready ? true : null;
+    }, { timeoutMs: 60000 });
+    const result = await renderer.evaluate(`(async () => {
+      const method = ${JSON.stringify('pluginManager/' + method)};
+      const response = await fetch('/api/' + method, {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(170000),
+        body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method,
+          payload: { args: ${JSON.stringify(args)} } }),
+      });
+      const text = await response.text();
+      if (!text) return { ok: false, transport: { status: response.status, emptyBody: true } };
+      return JSON.parse(text).result;
+    })()`);
+    assert.equal(result?.ok, true, JSON.stringify(result));
+    return result.value;
+  } finally { renderer.close(); }
 }
 
 async function runVersion(runtime) {
@@ -599,6 +710,12 @@ async function runVersion(runtime) {
   const afterProductManager = await first.probe('plugin-manager-state');
   assert.ok(managerNames(afterProductManager).includes(PRODUCT_BUNDLE));
   assert.equal(afterProductManager.bundles.find(bundle => bundle.name === PRODUCT_BUNDLE).enabled, true);
+  const hotInstalled = await waitFor(first, state => state.productControl?.phase === 'required'
+    && state.runtimeWeb.searchProviderId === 'grok-search', 'Hot installation did not take over before restart');
+  const hotInstalledUi = await pluginManagerRendererSnapshot(first);
+  const hotSettings = await settingsStopRendererFlow(first, 'hot-install');
+  const settingsSecurity = await settingsRpcSecurityFlow(first);
+  const settingsDialogs = await settingsDialogRendererFlow(first);
   const firstExit = await close(first);
   assert.equal(firstExit.exitCode, 0);
   assert.equal(firstExit.forced, false);
@@ -619,29 +736,49 @@ async function runVersion(runtime) {
   assert.match(installedUi.list.text, /已安装/);
   assert.match(installedUi.list.text, /dsh-grok-search/);
   assert.match(installedUi.detail.text, /0\.1\.0-beta\.1/);
-  assert.match(installedUi.detail.text, /用你自己的 grok-search-rs（Grok）接管 DSH 内置网页搜索/);
+  assert.match(installedUi.detail.text, /用 Grok 接管 DSH 网页搜索/);
 
-  // D-28 single bundle: a plain disable drops every entry. The pending record survives the
-  // deselection without an executor, and re-enabling restores takeover under D-26 authorization.
-  const settingsStop = await settingsStopRendererFlow(productHost);
+  // D-29: native hot disable restores the route, and explicit re-enable reacquires.
+  const settingsStop = await settingsStopRendererFlow(productHost, 'restart');
   writeJson(join(directory, runtime.app.version + '-settings-stop-ui.json'), safe(settingsStop));
-  assert.equal(settingsStop.buttonFound, true);
-  assert.match(settingsStop.after.text, /已恢复原搜索/);
-  assert.equal(settingsStop.after.error, null);
-  const stoppedSnapshot = await productHost.probe('snapshot');
+  assert.equal(settingsStop.buttonFound, false);
+
+  // Test-only observation of the owner's own release promise; it passes the
+  // product promise through unchanged and records only codes and receipts.
+  await productHost.probe('observe-product-release');
+  const disabled = await setBundleEnabled(productHost, PRODUCT_BUNDLE, false);
+  assertManagerApplied(disabled, PRODUCT_BUNDLE);
+  // The user-visible contract is the route; the durable completion receipt is
+  // written by the unloading owner and is checked separately with a deadline.
+  const restoredNow = await productHost.probe('snapshot');
+  assert.equal(restoredNow.runtimeWeb.searchProviderId, 'candidate-original');
+  assert.equal(restoredNow.runtimeWeb.fetchProviderId, 'candidate-fetch');
+  let stoppedSnapshot;
+  try {
+    stoppedSnapshot = await waitFor(productHost, state => state.recordEnvelope?.intent?.releaseCompletion,
+      'Native disable did not write a release completion receipt', 15000);
+  } catch (error) {
+    writeJson(join(directory, runtime.app.version + '-native-disable-completion-failure.json'), safe({
+      error: error.message, restoredNow: { runtimeWeb: restoredNow.runtimeWeb, hostLogs: restoredNow.hostLogs },
+      final: await productHost.probe('snapshot').then(state => ({ record: state.recordEnvelope,
+        productReleaseObservations: state.productReleaseObservations,
+        hostLogs: state.hostLogs, entries: state.entries.filter(row => row.error || /grok/.test(row.id)) })),
+    }));
+    throw error;
+  }
+  writeJson(join(directory, runtime.app.version + '-native-disable-release-observation.json'),
+    safe(stoppedSnapshot.productReleaseObservations ?? null));
   const stoppedRecord = stoppedSnapshot.recordEnvelope;
   assert.equal(stoppedRecord.intent.policy, 'released');
   assert.equal(stoppedRecord.intent.release.explicit, true);
-  // The owner's own release task writes the completion; the bundled recovery entry must not
-  // race it while the web route restore restarts the control fiber (D-28).
+  // Native PluginManager disable is the only user-facing release action. The
+  // owner writes completion while the bundle leaves; the settings page itself
+  // deliberately has no separate stop button.
   assert.equal(stoppedRecord.intent.releaseCompletion.recordCommit.kind, 'explicit-release-completion');
   assert.equal(stoppedRecord.intent.recovery, undefined);
   assert.equal(stoppedRecord.intent.releaseCompletion.routeVerified, true);
   assert.equal(stoppedRecord.intent.releaseCompletion.routeEvidence.originalSearchDelta, 0);
   assert.equal(stoppedSnapshot.runtimeWeb.searchProviderId, 'candidate-original');
-
-  const disabled = await setBundleEnabled(productHost, PRODUCT_BUNDLE, false);
-  assertManagerApplied(disabled, PRODUCT_BUNDLE);
   const productExit = await close(productHost);
   assert.equal(productExit.exitCode, 0);
   assert.equal(productExit.forced, false);
@@ -655,16 +792,19 @@ async function runVersion(runtime) {
   assert.equal(releasedState.runtimeWeb.searchProviderId, 'candidate-original');
   const enabled = await setBundleEnabled(releasedHost, PRODUCT_BUNDLE, true);
   assertManagerApplied(enabled, PRODUCT_BUNDLE);
+  const hotReenabled = await waitFor(releasedHost, state => state.productControl?.phase === 'required'
+    && state.runtimeWeb.searchProviderId === 'grok-search', 'Hot re-enable did not take over before restart');
   const releasedExit = await close(releasedHost);
   assert.equal(releasedExit.exitCode, 0);
   assert.equal(releasedExit.forced, false);
 
   const revivedHost = await start(runtime, folder, 'manager-revive-startup');
-  const revived = await waitFor(revivedHost, snapshot => snapshot.productControl,
+  const revived = await waitFor(revivedHost, snapshot => snapshot.productControl?.phase === 'required',
     'Product control did not reload after re-enabling the bundle');
-  assert.equal(revived.productControl.phase, 'released');
-  assert.deepEqual(revived.recordEnvelope, stoppedRecord);
-  assert.equal(revived.runtimeWeb.searchProviderId, 'candidate-original');
+  assert.equal(revived.productControl.phase, 'required');
+  assert.equal(revived.recordEnvelope.intent.policy, 'required');
+  assert.notDeepEqual(revived.recordEnvelope, stoppedRecord);
+  assert.equal(revived.runtimeWeb.searchProviderId, 'grok-search');
   assert.equal(revived.runtimeWeb.fetchProviderId, 'candidate-fetch');
   const revivedFetch = await modelTurn(revivedHost, 'fetch');
   const revivedChat = await modelTurn(revivedHost, 'chat');
@@ -672,6 +812,10 @@ async function runVersion(runtime) {
   assert.equal(revivedChat.isError, false);
   const disabledAgain = await setBundleEnabled(revivedHost, PRODUCT_BUNDLE, false);
   assertManagerApplied(disabledAgain, PRODUCT_BUNDLE);
+  const stoppedAgain = (await revivedHost.probe('snapshot')).recordEnvelope;
+  assert.equal(stoppedAgain.intent.policy, 'released');
+  assert.equal(stoppedAgain.intent.releaseCompletion.routeVerified, true);
+  assert.equal(stoppedAgain.intent.releaseCompletion.routeEvidence.originalSearchDelta, 0);
   const revivedExit = await close(revivedHost);
   assert.equal(revivedExit.exitCode, 0);
   assert.equal(revivedExit.forced, false);
@@ -692,7 +836,7 @@ async function runVersion(runtime) {
   assert.equal(cleanedPackage.dependencies[PRODUCT_BUNDLE], undefined);
   assert.deepEqual(cleanedPackage.dsh.profile.bundles, ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'candidate-offline-fixture']);
   const cleaned = await cleanupHost.probe('snapshot');
-  assert.deepEqual(cleaned.recordEnvelope, stoppedRecord);
+  assert.deepEqual(cleaned.recordEnvelope, stoppedAgain);
   assert.equal(cleaned.runtimeWeb.searchProviderId, 'candidate-original');
   assert.equal(cleaned.runtimeWeb.fetchProviderId, 'candidate-fetch');
   assert.equal(cleaned.existingDependencyPresent, true);
@@ -714,7 +858,7 @@ async function runVersion(runtime) {
   assert.equal(restarted.productControl, null);
   assert.equal(restarted.productRecovery, null);
   assert.equal(restarted.productRouteVerifier, null);
-  assert.deepEqual(restarted.recordEnvelope, stoppedRecord);
+  assert.deepEqual(restarted.recordEnvelope, stoppedAgain);
   assert.equal(restarted.runtimeWeb.searchProviderId, 'candidate-original');
   assert.equal(restarted.runtimeWeb.fetchProviderId, 'candidate-fetch');
   assert.equal(restarted.existingDependencyPresent, true);
@@ -729,13 +873,16 @@ async function runVersion(runtime) {
   assert.equal(finalExit.exitCode, 0);
   assert.equal(finalExit.forced, false);
 
-  return { initialManager, productInstall, firstExit, before, settingsStop, stoppedRecord, productExit,
-    releasedState, enabled, revived, revivedFetch, revivedChat, disabledAgain, revivedExit,
+  return { initialManager, productInstall, hotInstalled, hotInstalledUi, hotSettings, hotReenabled, settingsSecurity, settingsDialogs,
+    firstExit, before, settingsStop, stoppedRecord, productExit,
+    releasedState, enabled, revived, revivedFetch, revivedChat, disabledAgain, stoppedAgain, revivedExit,
     uiDomValidated: true, productRemove, cleanedManager, cleaned, authorSearch, fetch, chat, cleanupExit,
     restarted, restartSearch, restartFetch, restartChat, finalExit };
 }
 
 let fatal = null;
+const associationBefore = await protocolAssociation();
+if (associationBefore && associationBefore.exitCode !== 0) throw new Error('Cannot verify dsh:// association before Desktop run.');
 const beforeHashes = Object.fromEntries(runtimes.map(runtime => [runtime.app.version,
   { executable: sha256(runtime.executable), asar: sha256(runtime.archivePath) }]));
 try {
@@ -753,14 +900,22 @@ try {
   const afterHashes = Object.fromEntries(runtimes.map(runtime => [runtime.app.version,
     { executable: sha256(runtime.executable), asar: sha256(runtime.archivePath) }]));
   const unchanged = JSON.stringify(beforeHashes) === JSON.stringify(afterHashes);
-  const passed = !fatal && unchanged;
+  const associationAfter = await protocolAssociation();
+  const protocolUnchanged = associationBefore === null || associationAfter?.exitCode === 0
+    && associationBefore.rawStdout === associationAfter.rawStdout;
+  const sourcesUnchanged = sourceHashesBefore.every(row => sha256(join(project, row.file)) === row.sha256);
+  if (!sourcesUnchanged) fatal ??= { message: 'Source changed during verification; not a current-source gate.' };
+  const passed = !fatal && unchanged && protocolUnchanged;
   const summary = {
     runId, status: passed ? 'pass' : 'fail',
     counts: { pass: results.filter(row => row.status === 'pass').length,
-      fail: results.filter(row => row.status === 'fail').length + (unchanged ? 0 : 1) },
+      fail: results.filter(row => row.status === 'fail').length + (unchanged ? 0 : 1) + (protocolUnchanged ? 0 : 1) },
     fatal: fatal ? safe(fatal) : null,
-    scope: 'actual-packaged-official-Desktop-with-official-PluginManager-service',
-    packagedDesktopStartupValidated: passed,
+    scope: process.platform === 'win32'
+      ? 'official-Desktop-default-app-original-ASAR-with-official-PluginManager-service'
+      : 'actual-packaged-official-Desktop-with-official-PluginManager-service',
+    packagedDesktopStartupValidated: passed && process.platform !== 'win32',
+    originalDesktopRuntimeValidated: passed,
     pluginManagerValidated: passed,
     pluginManagerUiDomValidated: passed && results.length === runtimes.length
       && results.every(row => row.evidence?.uiDomValidated === true),
@@ -777,13 +932,9 @@ try {
     results: results.map(({ version, scenario, status, evidence, error }) => ({ version, scenario, status,
       ...(evidence ? { evidence } : {}), ...(error ? { error } : {}) })),
     originalHashes: { before: beforeHashes, after: afterHashes, unchanged },
-    sourceHashes: ['src/index.mjs', 'src/control.mjs', 'src/recovery.mjs', 'src/route-verifier.mjs',
-      'src/core/original-search-counter.mjs',
-      'src/core/control-intent-store.mjs', 'src/core/startup-recovery.mjs', 'src/core/release-transaction.mjs',
-      'src/core/product-control.mjs', 'fixtures/deferred-release/desktop-fixture.mjs',
-      'fixtures/internal-candidate/host-fixture.mjs', 'scripts/deferred-release-desktop-prepare.mjs',
-      'scripts/b2-plugin-manager-desktop.mjs', 'cordis.patch.yml']
-      .map(file => ({ file, sha256: sha256(join(project, file)) })),
+    protocolAssociationUnchanged: protocolUnchanged,
+    sourceHashes: sourceHashesBefore,
+    sourcesUnchanged,
     exits: children.map(row => ({ prefix: row.prefix, exitCode: row.exitCode, signal: row.signal,
       forced: row.forced ?? false })),
   };

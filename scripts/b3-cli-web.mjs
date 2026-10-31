@@ -1042,6 +1042,11 @@ function compactEvent(event) {
 }
 
 async function linuxWorker(options) {
+  const runtimeFiles = folder => readdirSync(join(PROJECT_ROOT, folder), { withFileTypes: true })
+    .flatMap(row => row.isDirectory() ? runtimeFiles(folder + '/' + row.name) : [folder + '/' + row.name]);
+  const sourceHashesBefore = ['scripts/b3-cli-web.mjs', 'scripts/lib/renderer-cdp.mjs', 'fixtures/cli-web/fixture.mjs',
+    'package.json', 'README.md', 'support-matrix.json', 'LICENSE', 'cordis.patch.yml', ...runtimeFiles('src')]
+    .map(file => ({ file, sha256: sha256(join(PROJECT_ROOT, file)) }));
   const runId = options.runId ?? isoRunId(options.dshVersion);
   const runRoot = `/tmp/dsh-grok-cli-web-${runId}`;
   const dshHome = join(runRoot, 'dsh-home');
@@ -1467,11 +1472,7 @@ async function linuxWorker(options) {
       'web-deepseek-api',
       'llm-deepseek',
       'llm-deepseek-account',
-      'grok-search-core',
-      'grok-search-control',
-      'grok-search-settings-ui',
-      'grok-search-route-verifier',
-      'grok-search-recovery',
+      'grok-search',
     ];
     const idPresence = Object.fromEntries(requiredIds.map(id => [id, findId(baselineDump.stdout, id)]));
     evidence.json('dump-config-id-presence.json', idPresence);
@@ -1670,7 +1671,7 @@ async function linuxWorker(options) {
         }],
       },
       {
-        id: 'grok-search-core',
+        id: 'grok-search',
         config: {
           executable: grokExecutable,
           executableArgs: [],
@@ -1865,6 +1866,17 @@ async function linuxWorker(options) {
     await startWeb('initial');
 
     let rpcSequence = 0;
+    const settingsCall = async (method, request, extraHeaders = {}, cookie = auth.cookie) => {
+      const response = await fetch(`${auth.hostOrigin}/api/grokSearchSettings/${method}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Origin: auth.hostOrigin,
+          ...(cookie ? { Cookie: cookie } : {}), ...extraHeaders },
+        body: JSON.stringify({ type: 'client-request', rpcId: `private-test-${++rpcSequence}`,
+          method: `grokSearchSettings/${method}`, payload: { args: request === undefined ? {} : { request } } }),
+        signal: AbortSignal.timeout(30000),
+      });
+      let value; try { value = await response.json(); } catch { value = {}; }
+      return { status: response.status, ...value.result };
+    };
     const rpc = async (label, endpoint, args) => {
       const rpcId = `${runId}-${safeName(label)}-${++rpcSequence}`;
       const payload = {
@@ -2024,6 +2036,12 @@ async function linuxWorker(options) {
             return observation;
           })()`), { timeoutMs: 20_000 });
           evidence.json('linux-settings-workspace-open.json', workspaceOpen);
+          await waitForRenderer(renderer, current => current.evaluate(`(() => {
+            const text=document.body?.innerText ?? '';
+            const picker=[...document.querySelectorAll('button,[role="button"]')].some(item =>
+              item.getClientRects().length > 0 && /^(Open|打开)$/.test((item.innerText || '').trim()));
+            return !picker && !/Choose a workspace to start|选择工作区以开始/.test(text) ? true : null;
+          })()`), { timeoutMs: 30000 });
         }
         let shell;
         try {
@@ -2052,36 +2070,13 @@ async function linuxWorker(options) {
           throw new Error(`Linux browser shell did not become ready: ${JSON.stringify(diagnostic).slice(0, 2_000)}`);
         }
         evidence.json('linux-settings-shell-ui.json', shell);
-        await renderer.evaluate(`(() => {
-          const buttons = [...document.querySelectorAll('button,[role="button"],[role="menuitem"]')];
-          const more = buttons.find(item => /^(Account menu|账号菜单)$/
-            .test((item.getAttribute('aria-label') || item.innerText || '').trim()))
-            ?? buttons.find(item => /^(More|更多)$/.test((item.innerText || '').trim()));
-          if (!more) throw new Error('Account menu button was not found.');
-          more.click();
-        })()`);
-        const settingsEntryClick = await waitForRenderer(renderer, current => current.evaluate(`(() => {
-          const item = [...document.querySelectorAll('button,[role="menuitem"],[role="button"],a')]
-            .find(row => /设置|Settings/.test((row.getAttribute('aria-label') || row.innerText || '').trim()));
-          if (!item) return null;
-          const observation = {
-            text: (item.innerText || item.getAttribute('aria-label') || '').trim(),
-            role: item.getAttribute('role'),
-            controls: [...document.querySelectorAll('button,[role="menuitem"],[role="button"],a')]
-              .map(row => ({
-                text: (row.innerText || row.getAttribute('aria-label') || '').trim(),
-                role: row.getAttribute('role'),
-              }))
-              .filter(row => row.text),
-          };
-          item.click();
-          return observation;
-        })()`), { timeoutMs: 10_000 });
-        evidence.json('linux-settings-entry-ui.json', settingsEntryClick);
+        // Plugins is a dedicated shell entry, not a tab inside General
+        // Settings. Waiting for its own dialog avoids clicking behind an
+        // unrelated settings modal during an asynchronous React transition.
         try {
           const sectionClick = await waitForRenderer(renderer, current => current.evaluate(`(() => {
-            const section = [...document.querySelectorAll('button,[role="tab"]')]
-              .find(item => /^(内置插件|Built-in plugins)$/
+          const section = [...document.querySelectorAll('button,[role="tab"]')]
+            .find(item => item.getClientRects().length > 0 && /^(插件|Plugins)$/
                 .test((item.getAttribute('aria-label') || item.innerText || '').trim()));
             if (!section) return null;
             const observation = {
@@ -2119,11 +2114,16 @@ async function linuxWorker(options) {
           evidence.json('linux-settings-sections-failure.json', diagnostic);
           throw new Error(`Linux Settings sections did not render: ${JSON.stringify(diagnostic).slice(0, 2_000)}`);
         }
+        await waitForRenderer(renderer, current => current.evaluate(`(() => {
+          const text=document.body?.innerText ?? '';
+          return !/Loading plugins|正在加载插件/i.test(text) && /插件管理|Plugin Manager|已安装|Installed/i.test(text)
+            ? true : null;
+        })()`), { timeoutMs: 30000 });
         try {
           await waitForRenderer(renderer, current => current.evaluate(`(() => {
-            const tab = [...document.querySelectorAll('button,[role="tab"]')]
-              .find(item => /^(Grok 搜索|Grok search)$/
-                .test((item.getAttribute('aria-label') || item.innerText || '').trim()));
+          const tab = [...document.querySelectorAll('button,[role="button"]')]
+            .find(item => item.getClientRects().length > 0
+              && /^(查看|View) dsh-grok-search$/.test((item.getAttribute('aria-label') || '').trim()));
             if (!tab) return null;
             tab.click();
             return true;
@@ -2157,8 +2157,10 @@ async function linuxWorker(options) {
           throw new Error(`Linux Grok settings tab did not render: ${JSON.stringify(diagnostic).slice(0, 2_000)}`);
         }
         const detail = await waitForRenderer(renderer, current => current.evaluate(`(() => {
-          const root = document.querySelector('[data-grok-search-settings]');
-          if (!root) return null;
+          const detail = document.querySelector('[data-plugin-detail="dsh-grok-search"]');
+          const root = detail?.querySelector('[data-dsg-route]')?.shadowRoot;
+          const card = root?.querySelector('#routeCard');
+          if (!card || !card.dataset.s || card.dataset.s === 'load') return null;
           const buttons = [...root.querySelectorAll('button,[role="button"]')]
             .map(item => ({
               text: (item.innerText || item.getAttribute('aria-label') || item.title || '').trim(),
@@ -2169,10 +2171,12 @@ async function linuxWorker(options) {
           return {
             href: location.href,
             title: document.title,
-            text: root.innerText,
+            text: root.querySelector('.dsg-root')?.innerText ?? '',
             bodyText: document.body.innerText,
             buttons,
-            error: root.querySelector('[role="alert"]')?.textContent?.trim() ?? null,
+            error: root.querySelector('#routeCard')?.getAttribute('data-s') === 'cfgerr'
+              ? root.querySelector('#bannerSlot')?.textContent?.trim() : null,
+            state: root.querySelector('#routeCard')?.dataset.s ?? null,
           };
         })()`), { timeoutMs: 30_000 });
         evidence.json('linux-settings-grok-ui.json', detail);
@@ -2183,28 +2187,91 @@ async function linuxWorker(options) {
         });
         writeFileSync(join(artifactDir, 'linux-settings-grok-ui.png'),
           Buffer.from(screenshot.data, 'base64'));
-        const stopButton = detail.buttons.find(item =>
-          /^(停止接管并恢复原搜索|Stop takeover and restore search)$/.test(item.text) && item.visible);
+        const routeStage = Boolean(await renderer.evaluate(`Boolean(document.querySelector('[data-dsg-route]')
+          ?.shadowRoot?.querySelector('#stage'))`));
+        const providerRows = await renderer.evaluate(`document.querySelector('[data-dsg-route]')
+          ?.shadowRoot?.querySelectorAll('.row[data-id]').length ?? 0`);
         check('linux-settings-ui-open', detail.href.startsWith(`${auth.hostOrigin}/`)
-          && /内置插件|Built-in plugins|Grok 搜索|Grok search/.test(detail.bodyText), {
+          && /插件|Plugins|dsh-grok-search/.test(detail.bodyText), {
           href: detail.href,
           title: detail.title,
         });
-        check('linux-settings-ui-takeover', /接管|Takeover/.test(detail.text)
-          && !/错误|失败|Error|Failed/.test(detail.text), {
+        check('linux-settings-ui-takeover', ['live', 'fallback', 'backup', 'wait', 'prep'].includes(detail.state), {
           text: detail.text,
         });
-        check('linux-settings-ui-stop-button', Boolean(stopButton) && stopButton.disabled === false, {
-          stopButton: stopButton ?? null,
+        check('linux-settings-ui-v74-route', routeStage && providerRows >= 6, {
+          routeStage,
+          providerRows,
           buttons: detail.buttons,
         });
         check('linux-settings-ui-no-error', detail.error === null, { error: detail.error });
+        const q = selector => `(() => {
+          const mounted = document.querySelector('[data-dsg-route]')?.shadowRoot?.querySelector(${JSON.stringify(selector)});
+          if (mounted) return mounted;
+          for (const host of document.querySelectorAll('[data-dsg-layer]')) {
+            const found = host.shadowRoot?.querySelector(${JSON.stringify(selector)});
+            if (found) return found;
+          }
+          return null;
+        })()`;
+        const click = selector => renderer.evaluate(`(() => {
+          const element = ${q(selector)}; if (!element || element.disabled) return false;
+          element.click(); return true;
+        })()`);
+        const current = await settingsCall('snapshot');
+        check('linux-settings-secure-owner-snapshot', current.ok === true
+          && current.value.capabilities.secretsAllowed === true && current.value.capabilities.transport === 'loopback');
+        const revealed = await settingsCall('reveal', { key: 'grok_api_key' });
+        check('linux-settings-explicit-reveal', revealed.ok === true && revealed.value.value === GROK_TEST_API_KEY);
+        check('linux-settings-snapshot-redacted', !JSON.stringify(current.value).includes(GROK_TEST_API_KEY));
+        const forwarded = await settingsCall('reveal', { key: 'grok_api_key' }, { 'X-Forwarded-Proto': 'https' });
+        check('linux-settings-forwarded-facts-not-trusted', forwarded.ok !== true
+          && forwarded.error?.code === 'SETTINGS_SECURE_CONNECTION_REQUIRED'
+          && !JSON.stringify(forwarded).includes(GROK_TEST_API_KEY));
+        const unauthenticated = await settingsCall('reveal', { key: 'grok_api_key' }, {}, '');
+        check('linux-settings-no-owner-denied', [401, 403].includes(unauthenticated.status));
+        check('linux-settings-dialog-open', await click('.row[data-id=grok] .row-main'));
+        await waitForRenderer(renderer, current => current.evaluate(`Boolean(${q('input[data-k=model]')})`));
+        check('linux-settings-key-hidden-in-input', await renderer.evaluate(`${q('input[data-k=key')}?.value === ''`));
+        check('linux-settings-eye-click', await click('[data-a=eye][data-k=key]'));
+        await waitForRenderer(renderer, current => current.evaluate(`${q('input[data-k=key')}?.type === 'text'
+          && ${q('input[data-k=key')}?.value === ${JSON.stringify(GROK_TEST_API_KEY)}`));
+        check('linux-settings-reveal-pristine', await renderer.evaluate(`${q('[data-a=save]')}?.disabled === true`));
+        check('linux-settings-fill-model', await renderer.evaluate(`(() => {
+          const input=${q('input[data-k=model]')}; if (!input) return false;
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'grok-ui-offline-model');
+          input.dispatchEvent(new Event('input',{bubbles:true,composed:true})); return true;
+        })()`));
+        check('linux-settings-save-via-production-adapter', await click('[data-a=save]'));
+        await waitForRenderer(renderer, current => current.evaluate(`${q('#overlay')}?.hidden === true`));
+        const saved = await settingsCall('snapshot');
+        check('linux-settings-save-shared-readback', saved.ok === true
+          && saved.value.config.fields.grok_model.value === 'grok-ui-offline-model');
+        check('linux-settings-history-undo-click', await click('.t-act'));
+        await waitFor(async () => {
+          const state = await settingsCall('snapshot');
+          return state.ok && state.value.config.fields.grok_model.value === current.value.config.fields.grok_model.value ? true : null;
+        }, 15000, 'history undo restores shared model');
+        await waitForRenderer(renderer, current => current.evaluate(`!${q('.dsg-root')}?.classList.contains('is-busy')`));
+        // Shared history restore may settle before its UI finally block.
+        // Wait for the visible undo toast; do not click into that busy frame.
+        await waitForRenderer(renderer, current => current.evaluate(`Boolean(${q('.t-text')}
+          ?.textContent?.includes('已恢复'))`));
+        check('linux-settings-history-undo-verified', true);
+        check('linux-settings-TinyFish-open', await click('.row[data-id=tinyfish] .row-main'));
+        await waitForRenderer(renderer, current => current.evaluate(`Boolean(${q('input[data-k=searchUrl]')})`));
+        check('linux-settings-TinyFish-double-url', await renderer.evaluate(`Boolean(${q('input[data-k=searchUrl]')})
+          && Boolean(${q('input[data-k=fetchUrl]')})`));
+        check('linux-settings-TinyFish-unconfigured-switch', await renderer.evaluate(`${q('.head-switch .switch')}
+          ?.getAttribute('aria-checked') === 'false'`));
+        await click('[data-a=cancel]');
         step('browser-settings-dom', {
           browser: '<BROWSER_EXECUTABLE>',
           href: detail.href,
           title: detail.title,
           settingsText: detail.text,
-          stopButton,
+          routeStage,
+          providerRows,
           screenshot: 'linux-settings-grok-ui.png',
         });
         return detail;
@@ -2268,7 +2335,7 @@ async function linuxWorker(options) {
     });
     auth.sessionId = created.sessionId;
 
-    const runTurn = async (label, text, expectedTool) => {
+    const runTurn = async (label, text, expectedTool, expectedError = false) => {
       const before = await probe();
       const beforeEvents = before.sessionEvents.length;
       const beforeCompleted = before.completed;
@@ -2315,7 +2382,7 @@ async function linuxWorker(options) {
           expected: expectedTool,
           actual: toolCall?.data?.name ?? null,
         });
-        check(`${label}-tool-result`, toolResult && toolResult.data?.message?.isError !== true, {
+        check(`${label}-tool-result`, Boolean(toolResult) && (toolResult.data?.message?.isError === true) === expectedError, {
           isError: toolResult?.data?.message?.isError ?? null,
         });
       } else {
@@ -2337,6 +2404,11 @@ async function linuxWorker(options) {
       };
     };
 
+    await waitFor(async () => {
+      const value = await probe();
+      if (value.program?.phase === 'error') throw new Error('Isolated Grok program: ' + JSON.stringify(value.program.error));
+      return value.program?.phase === 'ready' ? true : null;
+    }, 30000, 'isolated Grok program ready');
     const searchTurn = await runTurn('search', 'search', 'web_search');
     check('search-result', searchTurn.toolResult?.text?.includes(
       'Linux grok-search-rs 0.1.26 real MCP search succeeded.'), {
@@ -2353,13 +2425,15 @@ async function linuxWorker(options) {
     });
     const grokDiagnostic = searchTurn.snapshot.core?.lastDiagnostic ?? null;
     check('real-grok-mcp-process-search', grokDiagnostic?.serverVersion === GROK_VERSION
-      && grokDiagnostic?.exited === true && grokDiagnostic?.fallbackUsed !== true
+      && grokDiagnostic?.exited === false && grokDiagnostic?.fallbackUsed !== true
       && typeof grokDiagnostic?.sdkEntry === 'string'
       && grokDiagnostic.sdkEntry.includes('@modelcontextprotocol/client'), {
       diagnostic: grokDiagnostic,
     });
     const grokPid = grokDiagnostic?.childPid;
-    check('real-grok-mcp-search-child-reaped', Number.isSafeInteger(grokPid) && !pidAlive(grokPid), {
+    check('real-grok-mcp-search-session-reused', Number.isSafeInteger(grokPid) && pidAlive(grokPid)
+      && searchTurn.snapshot.core?.session?.connected === true
+      && searchTurn.snapshot.core?.session?.active === false, {
       childPid: grokPid ?? null,
       alive: grokPid ? pidAlive(grokPid) : null,
       diagnostic: grokDiagnostic,
@@ -2452,12 +2526,83 @@ async function linuxWorker(options) {
 
     await browserSettingsDom();
 
+    if (options.case === 'full') {
+      const originalText = readFileSync(grokConfigPath, 'utf8');
+      const originalPreferences = await settingsCall('preferences');
+      check('sources-only-preferences-read', originalPreferences.ok === true);
+      const received = [];
+      const server = createServer((request, response) => {
+        let body = '';
+        request.on('data', chunk => { if (body.length < 65536) body += chunk; });
+        request.on('end', () => {
+          const valid = request.method === 'POST' && request.url === '/search'
+            && request.headers['x-api-key'] === GROK_TEST_API_KEY;
+          received.push({ method: request.method, path: request.url, valid });
+          response.writeHead(valid ? 200 : 400, { 'Content-Type': 'application/json' });
+          response.end(JSON.stringify({ results: [{ url: 'https://example.invalid/linux-sources-only',
+            title: '隔离补充来源', summary: '测试摘要'.repeat(20000) }] }));
+        });
+      });
+      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+      try {
+        const cfg = await settingsCall('snapshot');
+        const saved = await settingsCall('save', { expectedRevision: cfg.value.config.revision,
+          updates: { exa_api_key: GROK_TEST_API_KEY, exa_api_url: `http://127.0.0.1:${server.address().port}`,
+            exa_enabled: true, source_providers: ['exa'], response_max_chars: 5000 } });
+        check('sources-only-shared-save', saved.ok === true);
+        const switched = await settingsCall('savePreferences', { expectedRevision: originalPreferences.value.revision,
+          value: { ...originalPreferences.value.value, grokEnabled: false } });
+        check('sources-only-disable-grok', switched.ok === true);
+        const officialBefore = officialStub.requests.length, grokBefore = grokResponsesStub.requests.length;
+        const turn = await runTurn('sources-only-search', 'search', 'web_search');
+        const result = await probe('product-query-result');
+        check('sources-only-real-result', turn.toolResult?.isError !== true
+          && result.sources[0]?.url === 'https://example.invalid/linux-sources-only'
+          && received.length > 0 && received.every(row => row.valid));
+        check('sources-only-shared-budget', JSON.stringify(result).length <= 5000 && result.truncated === true,
+          { maxChars: 5000, serializedChars: JSON.stringify(result).length });
+        check('sources-only-no-grok-or-official', grokResponsesStub.requests.length === grokBefore
+          && officialStub.requests.length === officialBefore);
+        const count = received.length;
+        writeFileSync(grokConfigPath, 'exa_api_key = invalid-TOML\n');
+        const broken = await runTurn('sources-only-broken-config', 'search', 'web_search', true);
+        check('sources-only-invalid-config-explicit-no-fallback', broken.toolResult?.isError === true
+          && received.length === count && officialStub.requests.length === officialBefore);
+      } finally {
+        writeFileSync(grokConfigPath, originalText);
+        const currentPrefs = await settingsCall('preferences');
+        if (currentPrefs.ok) {
+          const restored = await settingsCall('savePreferences', { expectedRevision: currentPrefs.value.revision,
+            value: originalPreferences.value.value });
+          check('sources-only-restores-private-switches', restored.ok === true);
+        }
+        await new Promise(resolve => server.close(resolve));
+      }
+    }
+
     if (options.case === 'stop' || options.case === 'full') {
       const settingsBefore = await rpc('settings-snapshot-before-stop', 'grokSearchSettings/snapshot', {});
-      check('settings-snapshot-before-stop', settingsBefore.available === true
-        && settingsBefore.canStop === true, settingsBefore);
-      const stopValue = await rpc('settings-stop', 'grokSearchSettings/stop', {});
-      evidence.json('stop-rpc-result.json', stopValue);
+      check('settings-snapshot-before-stop', settingsBefore.control?.phase === 'required'
+        && settingsBefore.control?.canStop === true, { phase: settingsBefore.control?.phase,
+          canStop: settingsBefore.control?.canStop });
+      const nativeDisable = await rpc('native-bundle-disable', 'pluginManager/setBundleEnabled', {
+        name: 'dsh-grok-search', enabled: false,
+      });
+      check('native-hot-disable-applied', nativeDisable.application === 'applied' && nativeDisable.error == null,
+        { application: nativeDisable.application, error: nativeDisable.error ?? null });
+      const releasedEnvelope = await waitFor(async () => {
+        const value = await probe('read-control-record');
+        return value?.intent?.releaseCompletion?.routeVerified ? value : null;
+      }, 15000, 'native bundle release completion');
+      const releasedIntent = releasedEnvelope.intent;
+      evidence.json('native-release-envelope.json', releasedEnvelope);
+      const stopValue = { outcome: { kind: 'released', completionCommitted: true, routeVerified: true,
+        routeChanged: releasedIntent.releaseCompletion.routeChanged,
+        routeReceipt: releasedIntent.releaseCompletion.routeEvidence } };
+      evidence.json('native-release-evidence.json', {
+        nativeDisable, releaseEnvelope: releasedEnvelope, interpretation: stopValue,
+        interpretationIsRpcResult: false, hostReleaseCompletionReceiptValidated: false,
+      });
       check('stop-response', stopValue?.outcome?.completionCommitted === true
         && stopValue?.outcome?.routeVerified === true, {
         outcomeKind: stopValue?.outcome?.kind ?? null,
@@ -2471,18 +2616,18 @@ async function linuxWorker(options) {
       }, 15_000, 'official DeepSeek author route restoration');
       evidence.json('snapshot-after-stop.json', stopped);
       check('route-restored-after-stop', stopped.runtimeWeb.searchProviderId === 'deepseek-official'
-        && stopped.control?.phase === 'released', {
+        && stopped.control === null && stopped.entries.every(entry => entry.id !== 'grok-search'), {
         searchProviderId: stopped.runtimeWeb.searchProviderId,
         controlPhase: stopped.control?.phase ?? null,
       });
       check('official-provider-not-called-by-stop', officialStub.requests.length === 0, {
         officialStubRequests: officialStub.requests.length,
       });
-      const baselineCounter = stopped.originalSearchCounter;
-      check('canonical-counter-baseline', baselineCounter?.source
+      const baselineCounter = releasedIntent.releaseCompletion.routeEvidence;
+      check('canonical-counter-baseline', baselineCounter?.counterSource
         === 'dsh-session/web-deepseek-search-llm-request'
-        && baselineCounter?.eventType === 'web/deepseek-search-llm-request'
-        && baselineCounter?.calls === 0, { baselineCounter });
+        && baselineCounter?.originalSearchCalls === 0 && baselineCounter.originalSearchDelta === 0,
+      { baselineCounter, productCounterAfterUnload: stopped.originalSearchCounter });
       const stopRouteReceipt = stopValue?.outcome?.routeReceipt ?? null;
       const stopCounterSource = stopRouteReceipt?.counterSource
         ?? stopRouteReceipt?.routeEvidence?.counterSource
@@ -2493,17 +2638,17 @@ async function linuxWorker(options) {
           counterSource: stopCounterSource,
       });
       check('completion-and-route-verified-separate', stopValue.outcome.completionCommitted === true
-        && stopValue.outcome.routeVerified === true && stopped.control.completionCommitted === true
-        && stopped.control.routeVerified === true, {
+        && stopValue.outcome.routeVerified === true && releasedIntent.policy === 'released'
+        && releasedIntent.releaseCompletion.routeVerified === true, {
         stopOutcome: {
           completionCommitted: stopValue.outcome.completionCommitted,
           routeVerified: stopValue.outcome.routeVerified,
           routeChanged: stopValue.outcome.routeChanged,
         },
         publicSnapshot: {
-          completionCommitted: stopped.control.completionCommitted,
-          routeVerified: stopped.control.routeVerified,
-          routeChanged: stopped.control.routeChanged,
+          completionCommitted: Boolean(releasedIntent.releaseCompletion),
+          routeVerified: releasedIntent.releaseCompletion.routeVerified,
+          routeChanged: releasedIntent.releaseCompletion.routeChanged ?? null,
         },
       });
 
@@ -2523,20 +2668,22 @@ async function linuxWorker(options) {
           && request.url?.endsWith('/messages')), {
         officialStubRequests: officialStub.requests,
       });
+      // The product counter leaves with the disabled bundle. The persisted
+      // release receipt is its last authoritative window; a separate fixture
+      // listener observes the real canonical event for this positive control.
+      // Never label a nonexistent post-unload product service as still alive.
       const finalCounter = restoredSearch.snapshot.originalSearchCounter;
-      check('post-stop-canonical-counter-increased', finalCounter?.source
-        === 'dsh-session/web-deepseek-search-llm-request'
-        && finalCounter?.eventType === 'web/deepseek-search-llm-request'
-        && finalCounter?.calls > baselineCounter.calls, {
-        baseline: baselineCounter,
-        final: finalCounter,
-      });
+      check('post-stop-product-observer-unmounted', finalCounter === null);
+      check('post-stop-canonical-observer-positive-control',
+        restoredSearch.snapshot.fixtureObservedOfficialEvents > stopped.fixtureObservedOfficialEvents,
+      { before: stopped.fixtureObservedOfficialEvents, after: restoredSearch.snapshot.fixtureObservedOfficialEvents,
+        eventType: 'web/deepseek-search-llm-request', productCounterActive: false });
       check('canonical-event-independent-cross-check',
         restoredSearch.snapshot.fixtureObservedOfficialEvents >= 1
-        && restoredSearch.snapshot.fixtureObservedOfficialEvents >= finalCounter.calls, {
+        && restoredSearch.snapshot.fixtureObservedOfficialEvents > stopped.fixtureObservedOfficialEvents, {
         fixtureObservedOfficialEvents: restoredSearch.snapshot.fixtureObservedOfficialEvents,
         productCounterCalls: finalCounter?.calls ?? null,
-        note: 'Supporting cross-check only; product route verifier snapshot is authoritative.',
+        note: 'Real canonical Session-event positive control; product release receipt remains the authoritative release window.',
       });
       check('grok-not-called-after-author-route-restoration',
         grokResponsesStub.requests.length === grokRequestsAfterTakeover, {
@@ -2545,6 +2692,15 @@ async function linuxWorker(options) {
         });
 
       if (options.case === 'full') {
+        const reenableBeforeMatrix = await rpc('native-bundle-reenable-before-matrix', 'pluginManager/setBundleEnabled', {
+          name: 'dsh-grok-search', enabled: true,
+        });
+        check('native-hot-reenable-applied', reenableBeforeMatrix.application === 'applied' && reenableBeforeMatrix.error == null,
+          { application: reenableBeforeMatrix.application, error: reenableBeforeMatrix.error ?? null });
+        await waitFor(async () => {
+          const state = await probe();
+          return state.control?.phase === 'required' && state.runtimeWeb?.searchProviderId === 'grok-search' ? true : null;
+        }, 30000, 'native bundle reacquisition');
         const managerBeforeDisable = await probe('plugin-manager-state');
         evidence.json('plugin-manager-state-before-disable.json', managerBeforeDisable);
         const productRowBeforeDisable = managerBeforeDisable.bundles
@@ -2563,14 +2719,14 @@ async function linuxWorker(options) {
             error: disableResult?.error ?? null,
           });
         const pendingDisable = await probe();
-        const disableRemainsLoaded = pendingDisable.entries.some(entry => entry.id === 'grok-search-core');
+        const disableRemainsLoaded = pendingDisable.entries.some(entry => entry.id === 'grok-search');
         check('plugin-manager-disable-application-matches-runtime',
           disableResult.application === 'restart-required'
             ? disableRemainsLoaded && pendingDisable.runtimeWeb?.searchProviderId === 'grok-search'
             : !disableRemainsLoaded && pendingDisable.runtimeWeb?.searchProviderId === 'deepseek-official', {
             application: disableResult.application,
             disableRemainsLoaded,
-            productEntryPresent: pendingDisable.entries.some(entry => entry.id === 'grok-search-core'),
+            productEntryPresent: pendingDisable.entries.some(entry => entry.id === 'grok-search'),
             searchProviderId: pendingDisable.runtimeWeb?.searchProviderId ?? null,
           });
         const disabledSnapshot = disableRemainsLoaded
@@ -2644,16 +2800,18 @@ async function linuxWorker(options) {
           ['applied', 'restart-required'].includes(enableResult?.application), {
             application: enableResult?.application ?? null,
           });
-        await stopWeb('after-plugin-manager-enable');
-        await startWeb('reenabled-restart');
+        if (enableResult.application === 'restart-required') {
+          await stopWeb('after-plugin-manager-enable');
+          await startWeb('reenabled-restart');
+        }
         const reenabled = await waitFor(async () => {
           const value = await probe();
           return value.control && value.runtimeWeb ? value : null;
         }, 45_000, 're-enabled product control');
         evidence.json('snapshot-reenabled-restart.json', reenabled);
         const releasedRecord = reenabled.control?.recordEnvelope ?? null;
-        check('reenabled-control-remains-released', reenabled.control?.phase === 'released'
-          && reenabled.runtimeWeb.searchProviderId === 'deepseek-official', {
+        check('reenabled-control-reacquires', reenabled.control?.phase === 'required'
+          && reenabled.runtimeWeb.searchProviderId === 'grok-search', {
             phase: reenabled.control?.phase ?? null,
             searchProviderId: reenabled.runtimeWeb.searchProviderId,
             releasedRecord,
@@ -2665,10 +2823,11 @@ async function linuxWorker(options) {
         });
         auth.sessionId = reenabledSessionCreated.sessionId;
         const reenabledSearch = await runTurn('reenabled-search', 'search', 'web_search');
-        check('reenabled-search-uses-official-after-explicit-stop',
-          reenabledSearch.snapshot.runtimeWeb.searchProviderId === 'deepseek-official'
-          && officialStub.requests.length > officialBeforeReenabledSearch
-          && grokResponsesStub.requests.length === grokBeforeReenabledSearch, {
+        check('reenabled-search-uses-grok',
+          reenabledSearch.toolResult?.isError !== true
+          && reenabledSearch.snapshot.runtimeWeb.searchProviderId === 'grok-search'
+          && officialStub.requests.length === officialBeforeReenabledSearch
+          && grokResponsesStub.requests.length > grokBeforeReenabledSearch, {
             searchProviderId: reenabledSearch.snapshot.runtimeWeb.searchProviderId,
             officialRequestsDelta: officialStub.requests.length - officialBeforeReenabledSearch,
             grokRequestsDelta: grokResponsesStub.requests.length - grokBeforeReenabledSearch,
@@ -2891,6 +3050,9 @@ async function linuxWorker(options) {
     }
   }
 
+  const sourcesUnchanged = sourceHashesBefore.every(row => existsSync(join(PROJECT_ROOT, row.file))
+    && sha256(join(PROJECT_ROOT, row.file)) === row.sha256);
+  if (!sourcesUnchanged) failure ??= { message: 'Source changed during the run; this is not current-source evidence.' };
   const status = failure || checks.some(item => item.status !== 'pass') ? 'fail' : 'pass';
   const summary = {
     schemaVersion: 1,
@@ -2900,12 +3062,8 @@ async function linuxWorker(options) {
     dshVersion: VERSIONS[options.dshVersion],
     startedAt,
     finishedAt: new Date().toISOString(),
-    sourceHashes: [
-      'scripts/b3-cli-web.mjs',
-      'scripts/lib/renderer-cdp.mjs',
-      'fixtures/cli-web/fixture.mjs',
-      ...(packageReceipt?.files ?? []).map(({ path }) => path),
-    ].map(file => ({ file, sha256: existsSync(join(PROJECT_ROOT, file)) ? sha256(join(PROJECT_ROOT, file)) : null })),
+    sourceHashes: sourceHashesBefore,
+    sourcesUnchanged,
     productPackage: existsSync(options.productPackage) ? {
       sha256: sha256(options.productPackage),
       size: statSync(options.productPackage).size,
@@ -2954,7 +3112,7 @@ async function linuxWorker(options) {
       'The model and fetch provider are isolated offline fixtures.',
       'The official search path enables the real dsh web-search-deepseek provider against a 127.0.0.1-only Anthropic-format stub.',
       'Canonical official-search evidence comes from the product route verifier and dsh-session canonical event; the fixture event listener is a supporting cross-check only.',
-      'Web startup, authentication, session RPC, route mutation, browser Settings/Plugins DOM and settings stop are real dsh HTTP/Web paths.',
+      'Web startup, owner-authenticated RPC, Plugins detail DOM/shared configuration and native bundle disable/re-enable are real dsh HTTP/Web paths.',
       'The Linux browser uses an isolated profile and headless Chromium; no formal profile, shared Grok config, user credential, publication, commit or push was used.',
       'Temporary DSH_HOME and runtime paths are intentionally not part of public profile state.',
     ],
@@ -2966,7 +3124,7 @@ async function linuxWorker(options) {
       pnpmLocalRegistry: existsSync(join(artifactDir, 'pnpm-local-registry-after-install.json'))
         ? 'pnpm-local-registry-after-install.json' : null,
       routeTakeover: 'snapshot-route-takeover.json',
-      stopResult: existsSync(join(artifactDir, 'stop-rpc-result.json')) ? 'stop-rpc-result.json' : null,
+      stopResult: existsSync(join(artifactDir, 'native-release-evidence.json')) ? 'native-release-evidence.json' : null,
       officialStub: existsSync(join(artifactDir, 'official-search-stub-final.json'))
         ? 'official-search-stub-final.json' : 'official-search-stub-start.json',
       grokDirectProtocol: existsSync(join(artifactDir, 'grok-direct-mcp-protocol.json'))
@@ -2989,7 +3147,7 @@ async function linuxWorker(options) {
     dshVersion: VERSIONS[options.dshVersion],
     productSha256: summary.productPackage?.sha256 ?? null,
     officialCanonicalPathValidated: status === 'pass' && checks.some(check =>
-      check.name === 'post-stop-canonical-counter-increased' && check.status === 'pass'),
+      check.name === 'post-stop-canonical-observer-positive-control' && check.status === 'pass'),
     checks,
     commands: evidence.executions.map(({ label, exitCode, signal, timedOut, durationMs }) => ({
       label, exitCode, signal, timedOut, durationMs,

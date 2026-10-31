@@ -1,7 +1,12 @@
 import { spawn } from 'node:child_process';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import { homedir } from 'node:os';
+import { readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createSessionOwner } from './session-owner.mjs';
 import { GrokSearchError, isRecord, timeoutError } from './errors.mjs';
 import { decodeGrokResult, mapSearchResult } from './result-map.mjs';
+import { parse } from 'smol-toml';
 
 const FRAME_BYTES = 1_048_576;
 const SYSTEM_ENV = new Set([
@@ -10,7 +15,7 @@ const SYSTEM_ENV = new Set([
   'LANG', 'LC_ALL', 'LC_CTYPE', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
   'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
 ]);
-const GROK_ENV = /^(?:GROK_SEARCH_[A-Z0-9_]+|TAVILY_API_KEY|EXA_API_KEY|TINYFISH_API_KEY|FIRECRAWL_API_KEY)$/;
+const GROK_ENV = /^(?:GROK_SEARCH_[A-Z0-9_]+|OPENAI_COMPATIBLE_(?:API_URL|API_KEY|MODEL)|GITHUB_TOKEN|(?:TAVILY|EXA|FIRECRAWL)_(?:API_KEY|API_URL|ENABLED)|TINYFISH_(?:API_KEY|SEARCH_API_URL|FETCH_API_URL|ENABLED))$/;
 const failure = (code, message) => new GrokSearchError(code, message);
 const safeLabel = value => typeof value === 'string' && /^[\w.+-]{1,80}$/.test(value) ? value : null;
 
@@ -182,10 +187,86 @@ export class OwnedStdioTransport {
 
 const defaultSdkFactory = () => import('@modelcontextprotocol/client');
 
+async function closeConnection(connection, cleanupMs) {
+  if (connection.closing) return connection.closing;
+  connection.closing = (async () => {
+    const deadline = performance.now() + cleanupMs;
+    let error;
+    try { await connection.transport?.close(); } catch (caught) { error = caught; }
+    if (connection.client) {
+      let timer;
+      try {
+        await Promise.race([connection.client.close(), new Promise((_, reject) => {
+          timer = setTimeout(() => reject(failure('GROK_CLOSE_ERROR', 'MCP 会话未在回收预算内关闭。')),
+            Math.max(1, deadline - performance.now()));
+        })]);
+      } catch (caught) { error ??= caught instanceof GrokSearchError ? caught : failure('GROK_CLOSE_ERROR', 'MCP 会话关闭失败。'); }
+      finally { clearTimeout(timer); }
+    }
+    if (error) throw error;
+  })();
+  return connection.closing;
+}
+
+// Only hashes leave the identity calculation; keys and file contents are not
+// exposed in diagnostics. The environment used to spawn is the captured one.
+export function createManagedMcpSearch({ idleMs = 300_000, onError } = {}) {
+  const owner = createSessionOwner({ idleMs, onError,
+    open: async configuration => {
+      const connection = {};
+      return { connection, close: () => closeConnection(connection, configuration.cleanupMs ?? 2_000) };
+    },
+  });
+  return {
+    async run(options) {
+      options.signal?.throwIfAborted();
+      const environment = executionEnvironment(options.envOverrides, options.configPath);
+      const envValue = name => Object.entries(environment)
+        .find(([key]) => process.platform === 'win32' ? key.toUpperCase() === name : key === name)?.[1];
+      const configPath = envValue('GROK_SEARCH_CONFIG')
+        || join(envValue('HOME') || envValue('USERPROFILE') || homedir(), '.config/grok-search-rs/config.toml');
+      if (!isAbsolute(configPath)) throw failure('GROK_CONFIG_INVALID', 'Grok 配置文件必须使用绝对路径。');
+      for (const key of Object.keys(environment)) if (key.toUpperCase() === 'GROK_SEARCH_CONFIG') delete environment[key];
+      environment.GROK_SEARCH_CONFIG = configPath;
+      const program = statSync(options.executable);
+      let configHash = 'missing';
+      let fileMaxChars;
+      try {
+        if (statSync(configPath).size > FRAME_BYTES) throw failure('GROK_CONFIG_INVALID', 'Grok 配置文件超过 1 MiB。');
+        const bytes = readFileSync(configPath);
+        configHash = createHash('sha256').update(bytes).digest('hex');
+        const text = bytes.toString('utf8');
+        if (!Buffer.from(text).equals(bytes)) throw failure('GROK_CONFIG_INVALID', 'Grok 配置文件必须使用 UTF-8。');
+        let values;
+        try { values = parse(text.replace(/^\uFEFF/, ''), { integersAsBigInt: 'asNeeded', unsafeKeyBehaviour: 'throw' }); }
+        catch { throw failure('GROK_CONFIG_INVALID', 'Grok 配置文件不是有效 TOML。'); }
+        fileMaxChars = values.response_max_chars;
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const envMaxChars = envValue('GROK_SEARCH_RESPONSE_MAX_CHARS');
+      const maxChars = envMaxChars === undefined || envMaxChars === '' ? fileMaxChars ?? 45_000
+        : /^\d+$/.test(envMaxChars) ? Number(envMaxChars) : NaN;
+      if (!Number.isSafeInteger(maxChars) || maxChars < 100) throw failure('GROK_CONFIG_INVALID', '回复字符上限至少需要 100 字符。');
+      const identity = createHash('sha256').update(JSON.stringify({ executable: options.executable,
+        args: options.executableArgs ?? [], program: [program.size, program.mtimeMs, program.ctimeMs],
+        configPath, configHash, environment: Object.entries(environment).sort(([a], [b]) => a.localeCompare(b)),
+      })).digest('hex');
+      return owner.run({ identity, configuration: options, signal: options.signal,
+        operation: (session, signal) => runMcpSearch({ ...options, signal, maxChars: Math.min(500_000, maxChars),
+          connection: session.connection, capturedEnvironment: environment, keepAlive: true }),
+      });
+    },
+    snapshot: owner.snapshot,
+    dispose: owner.dispose,
+  };
+}
+
 export async function runMcpSearch({
   executable, executableArgs = [], configPath, envOverrides = {}, request, signal,
   remainingMs = () => 118_000, cleanupMs = 2_000, maxMessageBytes = FRAME_BYTES,
+  maxChars = 45_000,
   sdkFactory = defaultSdkFactory,
+  connection = {}, capturedEnvironment, keepAlive = false,
+  handshakeOnly = false,
 }) {
   if (typeof executable !== 'string' || !isAbsolute(executable) || executable.includes('\0')) throw new TypeError('Grok 程序必须使用绝对路径。');
   if (configPath !== undefined && (typeof configPath !== 'string' || !isAbsolute(configPath) || configPath.includes('\0'))) throw new TypeError('配置文件必须使用绝对路径。');
@@ -195,6 +276,7 @@ export async function runMcpSearch({
   if (typeof remainingMs !== 'function' || !Number.isFinite(remainingMs())) throw new TypeError('工作截止时间无效。');
   if (!Number.isSafeInteger(cleanupMs) || cleanupMs < 1 || cleanupMs > 2_000) throw new TypeError('回收预算必须在 1–2000 毫秒内。');
   if (!Number.isSafeInteger(maxMessageBytes) || maxMessageBytes < 128 || maxMessageBytes > FRAME_BYTES) throw new TypeError('单条消息上限必须在 128 字节至 1 MiB 内。');
+  if (!Number.isSafeInteger(maxChars) || maxChars < 100 || maxChars > 500_000) throw new TypeError('回复字符上限必须在 100–500000 字符内。');
   signal?.throwIfAborted();
   const started = performance.now();
   const deadline = new AbortController();
@@ -213,23 +295,34 @@ export async function runMcpSearch({
     if (remaining <= 0) throw timeoutError();
     return remaining;
   };
-  let client, transport, result, error, payload, sdkEntry = null, serverVersion = null;
+  let client = connection.client, transport = connection.transport, result, error, payload;
+  let sdkEntry = connection.sdkEntry ?? null, serverVersion = connection.serverVersion ?? null;
   let sourceRecovery = 'not-needed';
   try {
+    if (!client) {
     const sdk = await Promise.race([Promise.resolve().then(sdkFactory), aborted]);
     if (sdkFactory === defaultSdkFactory) sdkEntry = import.meta.resolve('@modelcontextprotocol/client');
     budget();
     if (typeof sdk.Client !== 'function' || typeof sdk.ReadBuffer !== 'function' || typeof sdk.serializeMessage !== 'function') throw failure('GROK_SDK_UNSUPPORTED', 'MCP SDK 缺少所需公开接口，请检查依赖版本。');
     client = new sdk.Client({ name: 'dsh-grok-search', version: '0.1.0-beta.1' }, { capabilities: {}, versionNegotiation: { mode: 'legacy' } });
+    connection.client = client;
     // 所有可能拒绝的 framing 参数先校验，再启动本次进程。
     const buffer = new sdk.ReadBuffer({ maxBufferSize: maxMessageBytes + 1 });
-    const child = spawn(executable, executableArgs, { env: executionEnvironment(envOverrides, configPath), shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(executable, executableArgs, { env: capturedEnvironment ?? executionEnvironment(envOverrides, configPath), shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     transport = new OwnedStdioTransport(child, sdk, { cleanupMs, maxMessageBytes, buffer });
+    connection.transport = transport;
+    await Promise.race([client.connect(transport, { signal: activeSignal, timeout: budget(), resetTimeoutOnProgress: false }), aborted, transport.fatal]);
+    serverVersion = safeLabel(client.getServerVersion()?.version);
+    Object.assign(connection, { sdkEntry, serverVersion });
+    }
     const race = operation => Promise.race([operation, aborted, transport.fatal]);
     const options = () => ({ signal: activeSignal, timeout: budget(), resetTimeoutOnProgress: false });
-    await race(client.connect(transport, options()));
     budget();
-    serverVersion = safeLabel(client.getServerVersion()?.version);
+    if (transport.failure) throw transport.failure;
+    if (handshakeOnly) {
+      if (!Object.hasOwn(client.getServerCapabilities() ?? {}, 'tools')) throw failure('GROK_SDK_UNSUPPORTED', 'Grok 未声明 MCP 工具能力。');
+      result = { serverVersion, toolsDeclared: true };
+    } else {
     payload = decodeGrokResult(await race(client.callTool({ name: 'web_search', arguments: { query: request.query, response_format: 'concise' } }, options())));
     budget();
     const total = payload.sources_count ?? payload.total_sources ?? payload.sources.length;
@@ -254,28 +347,23 @@ export async function runMcpSearch({
       }
     }
     budget();
-    result = mapSearchResult(payload, { maxResults: request.maxResults });
+    result = mapSearchResult(payload, { maxResults: request.maxResults, maxChars });
     budget();
+    }
   } catch (caught) {
     error = activeSignal.aborted ? activeSignal.reason : caught instanceof GrokSearchError ? caught : failure('GROK_MCP_ERROR', 'Grok 初始化或搜索失败，请检查上游和配置。');
   } finally {
     clearTimeout(timer);
     activeSignal.removeEventListener('abort', onAbort);
-    const cleanupDeadline = performance.now() + cleanupMs;
-    if (transport) {
-      try { await transport.close(); } catch (caught) { error = caught; }
-    }
-    if (client) {
-      let closeTimer;
-      try {
-        const available = Math.max(1, cleanupDeadline - performance.now());
-        await Promise.race([client.close(), new Promise((_, reject) => { closeTimer = setTimeout(() => reject(failure('GROK_CLOSE_ERROR', 'MCP 会话未在回收预算内关闭。')), available); })]);
-      } catch (caught) { error ??= caught instanceof GrokSearchError ? caught : failure('GROK_CLOSE_ERROR', 'MCP 会话关闭失败。'); }
-      finally { clearTimeout(closeTimer); }
-    }
     if (activeSignal.aborted && error === undefined) error = activeSignal.reason;
+    if (!keepAlive || error !== undefined) {
+      try { await closeConnection(connection, cleanupMs); } catch (caught) { error = caught; }
+    }
   }
+  // fallback_reason is a stable grok-search-rs identifier (grok_auth_error,
+  // grok_timeout, ...); safeLabel keeps any free text out of diagnostics.
   const diagnostic = { serverVersion, sdkEntry, searchProvider: safeLabel(payload?.search_provider), fallbackUsed: payload?.fallback_used ?? null,
+    fallbackReason: safeLabel(payload?.fallback_reason),
     sourceRecovery, elapsedMs: Math.round(performance.now() - started), ...(transport?.diagnostic() ?? { exited: true, childPid: null }) };
   if (error !== undefined) {
     if (error instanceof Error && Object.isExtensible(error) && !Object.hasOwn(error, 'diagnostic')) Object.defineProperty(error, 'diagnostic', { value: diagnostic });
@@ -283,4 +371,10 @@ export async function runMcpSearch({
   }
   Object.defineProperty(result, 'diagnostic', { value: diagnostic });
   return result;
+}
+
+export async function probeMcpHandshake({ executable, configPath, envOverrides, signal }) {
+  const result = await runMcpSearch({ executable, configPath, envOverrides, signal,
+    request: { query: 'handshake-only-not-sent' }, handshakeOnly: true, remainingMs: () => 5_000 });
+  return { version: result.serverVersion, toolsDeclared: result.toolsDeclared, exited: result.diagnostic.exited };
 }

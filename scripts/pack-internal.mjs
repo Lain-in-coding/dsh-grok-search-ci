@@ -18,11 +18,11 @@ export async function packInternal(directory, { beta = false } = {}) {
   const output = JSON.parse(record.rawStdout);
   const metadata = Array.isArray(output) ? output[0] : Object.values(output).find(value => value?.filename);
   if (!metadata?.filename || basename(metadata.filename) !== metadata.filename) throw new Error('打包输出缺少安全文件名。');
-  const allowed = path => ['package.json', 'README.md', 'cordis.patch.yml', 'support-matrix.json', 'LICENSE', 'src/index.mjs', 'src/provider.mjs', 'src/control.mjs', 'src/recovery.mjs', 'src/route-verifier.mjs', 'src/settings-ui.mjs', 'src/typert.host.mjs', 'src/client.js'].includes(path)
+  const allowed = path => ['package.json', 'README.md', 'cordis.patch.yml', 'support-matrix.json', 'LICENSE', 'src/bundle.mjs', 'src/program.mjs', 'src/index.mjs', 'src/provider.mjs', 'src/control.mjs', 'src/recovery.mjs', 'src/route-verifier.mjs', 'src/settings-ui.mjs', 'src/typert.host.mjs', 'src/client.js'].includes(path)
     || /^src\/core\/[a-z-]+\.mjs$/.test(path);
   const unexpected = metadata.files.filter(file => !allowed(file.path));
   if (unexpected.length) throw new Error('打包白名单失效：' + unexpected.map(file => file.path).join(', '));
-  for (const expected of ['package.json', 'README.md', 'cordis.patch.yml', 'support-matrix.json', 'LICENSE', 'src/index.mjs', 'src/provider.mjs', 'src/control.mjs', 'src/recovery.mjs', 'src/route-verifier.mjs', 'src/settings-ui.mjs', 'src/typert.host.mjs', 'src/client.js', 'src/core/release-transaction.mjs']) {
+  for (const expected of ['package.json', 'README.md', 'cordis.patch.yml', 'support-matrix.json', 'LICENSE', 'src/bundle.mjs', 'src/program.mjs', 'src/index.mjs', 'src/provider.mjs', 'src/control.mjs', 'src/recovery.mjs', 'src/route-verifier.mjs', 'src/settings-ui.mjs', 'src/typert.host.mjs', 'src/client.js', 'src/core/release-transaction.mjs']) {
     if (!metadata.files.some(file => file.path === expected)) throw new Error('压缩包遗漏文件：' + expected);
   }
   const readme = readFileSync(join(project, 'README.md'), 'utf8');

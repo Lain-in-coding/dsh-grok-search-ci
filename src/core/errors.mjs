@@ -1,8 +1,13 @@
 export class GrokSearchError extends Error {
-  constructor(code, message) {
+  /**
+   * @param details optional JSON-safe, secret-free payload (for example per
+   * source failure codes). It is forwarded to settings clients unchanged.
+   */
+  constructor(code, message, details) {
     super(message);
     this.name = 'GrokSearchError';
     this.code = code;
+    if (details !== undefined) this.details = details;
   }
 }
 

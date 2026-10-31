@@ -14,6 +14,7 @@ const trace = globalThis.__DSH_INTERNAL_CANDIDATE__ ??= {
   b2RecordFault: process.env.DSH_B2_RECORD_FAULT ?? null,
   productCounter: process.env.DSH_B2_PRODUCT_COUNTER !== '0',
   sessionEvents: [], toolMessages: [], controlEvents: [], currentSelectionAuthorization: true,
+  productReleaseObservations: [],
 };
 const raw = value => Object.fromEntries(Object.entries(value ?? {}).map(([key, item]) =>
   [key, typeof item?.get === 'function' ? item.get() : item]));
@@ -61,6 +62,18 @@ export async function apply(ctx) {
     }
   });
   const recordPath = join(ctx.profileContext.dir, 'control-intent.fixture.json');
+  // Packaged Desktop does not expose the Cordis logger on stdout. Keep a small
+  // isolated-profile buffer of product warnings/errors for gate diagnostics.
+  const hostLogs = [];
+  ctx.on('internal/dispatch', (_kind, event, values) => {
+    if (event !== 'logger/message') return;
+    const message = values?.[0];
+    if (!message || !['warn', 'error'].includes(message.type)) return;
+    const text = JSON.stringify(message.args ?? []).slice(0, 2000);
+    if (!/grok|CONTROL_/i.test(text + (message.name ?? ''))) return;
+    hostLogs.push({ type: message.type, name: message.name ?? null, text });
+    if (hostLogs.length > 50) hostLogs.shift();
+  });
   const selectionPath = join(ctx.profileContext.dir, 'package.json');
   const versionedStore = trace.b2ControlRecord ? createControlIntentStore({
     directory: join(ctx.profileContext.dir, 'control-intent.records'), legacyPath: recordPath }) : null;
@@ -87,6 +100,7 @@ export async function apply(ctx) {
       productControl: ctx.get('grokSearchControl')?.snapshot() ?? null,
       productRecovery: ctx.get('grokSearchRecovery')?.snapshot() ?? null,
       productRouteVerifier: ctx.get('grokSearchRouteVerifier')?.snapshot() ?? null,
+      productProgram: ctx.get('grokSearchProgram')?.snapshot?.() ?? null,
       originalSearchCounter: ctx.get('grokSearchOriginalSearchCounter')?.snapshot?.() ?? null,
       pluginManagerPresent: Boolean(ctx.get('pluginManager')),
       runtimeWeb: web ? { searchProviderId: web.searchProviderId ?? raw(web.config).searchProvider,
@@ -98,6 +112,7 @@ export async function apply(ctx) {
       entries: [...ctx.loader.entries()].map(row => ({ id: row.options.id, state: row.fiber?.state ?? null,
         disabled: row.options.disabled === true, error: row.fiber?.error ? String(row.fiber.error) : null })),
       sockets: [...socketRecords.values()].map(item => ({ id: item.id, opened: item.opened, closed: item.closed, frames: item.frames })),
+      hostLogs: structuredClone(hostLogs),
     };
   };
   ctx.inject(['webServer', 'sessionController', 'connection', 'agents', 'tools'], async (probeCtx) => {
@@ -119,6 +134,14 @@ export async function apply(ctx) {
         const { op, args = {} } = JSON.parse(body);
         const work = operations.then(async () => {
           if (op === 'snapshot') return snapshot();
+          // Test-only call of the public WebRuntime seam. Session tool output
+          // is rendered as Markdown and drops internal presentation metadata;
+          // this returns the real per-query JSON result without patching it.
+          if (op === 'product-query-result') {
+            const web = ctx.get('web');
+            if (!web) throw new Error('Public WebRuntime is not available.');
+            return web.search({ query: 'offline per-query budget probe', maxResults: 1 }, AbortSignal.timeout(5000));
+          }
           if (op === 'model-auth') return { url: probeCtx.connection.authenticatedUrl('http://127.0.0.1:' + probeCtx.webServer.port + '/') };
           if (op === 'tool-definition') {
             const agent = probeCtx.agents.get(args.sessionId);
@@ -127,7 +150,11 @@ export async function apply(ctx) {
               const definition = probeCtx.tools.get(name, agent);
               return definition ? { name, timeoutMs: definition.timeoutMs ?? null, description: definition.description ?? null } : null;
             });
-            const core = entry('grok-search-core');
+            // D-28 aggregate bundle: the query core is a child of the root
+            // `grok-search` entry and shares its configuration.
+            const rows = [...ctx.loader.entries()];
+            const core = rows.some(row => row.options.id === 'grok-search-core')
+              ? entry('grok-search-core') : entry('grok-search');
             const coreConfig = raw(core.fiber.config);
             return { sessionId: args.sessionId, definitions, coreBudgetMs: coreConfig.budgetMs ?? null };
           }
@@ -231,7 +258,56 @@ export async function apply(ctx) {
           if (op === 'retry-product-control') { const control = ctx.get('grokSearchControl'); if (!control?.retry) throw new Error('Product control service absent.'); await control.retry(); return snapshot(); }
           if (op === 'retry-product-recovery') { const recovery = ctx.get('grokSearchRecovery'); if (!recovery?.retry) throw new Error('Product recovery service absent.'); await recovery.retry(); return snapshot(); }
           if (op === 'product-stop') { const control = ctx.get('grokSearchControl'); if (!control?.stop) throw new Error('Product control service absent.'); const outcome = await control.stop(args.reason ?? 'explicit-product-stop'); return { ...snapshot(), productStopOutcome: outcome }; }
-          if (op === 'dispose-product-control') { await entry('grok-search-control').fiber.dispose(); await ctx.loader.await(); return snapshot(); }
+          if (op === 'observe-product-release') {
+            // Isolated-profile diagnostics only: record how the product owner's
+            // own release promise settles while the native disable tears the
+            // bundle down. The returned promise is passed through unchanged.
+            const control = ctx.get('grokSearchControl');
+            if (!control?.stop) throw new Error('Product control service absent.');
+            if (!control.__candidateReleaseObserved) {
+              const original = control.stop;
+              const observed = (reason, options) => {
+                const row = { reason: reason ?? null, unloading: options?.unloading === true,
+                  startedAt: new Date().toISOString(), settled: null };
+                trace.productReleaseObservations.push(row);
+                let task;
+                try { task = original(reason, options); }
+                catch (error) {
+                  row.settled = { status: 'threw', at: new Date().toISOString(),
+                    code: error?.code ?? null, message: String(error?.message ?? error).slice(0, 500) };
+                  throw error;
+                }
+                Promise.resolve(task).then(outcome => {
+                  row.settled = { status: 'resolved', at: new Date().toISOString(), kind: outcome?.kind ?? null,
+                    recordCommitted: outcome?.recordCommitted ?? null,
+                    completionCommitted: outcome?.completionCommitted ?? null,
+                    drainSettled: outcome?.drainSettled ?? null, routeChanged: outcome?.routeChanged ?? null,
+                    routeVerified: outcome?.routeVerified ?? null, code: outcome?.error?.code ?? null,
+                    message: outcome?.error?.message ? String(outcome.error.message).slice(0, 500) : null,
+                    receipt: outcome?.routeReceipt ? structuredClone({ ...outcome.routeReceipt, hostEvidence: undefined }) : null };
+                }, error => {
+                  row.settled = { status: 'rejected', at: new Date().toISOString(), code: error?.code ?? null,
+                    message: String(error?.message ?? error).slice(0, 500),
+                    outcomeCode: error?.releaseOutcome?.error?.code ?? null };
+                });
+                return task;
+              };
+              control.stop = observed;
+              control.release = observed;
+              control.__candidateReleaseObserved = true;
+            }
+            return { observed: true, observations: structuredClone(trace.productReleaseObservations) };
+          }
+          if (op === 'dispose-product-control') {
+            // Ordinary dispose, never a release: the bundle stays selected and
+            // no component is disabled. The aggregate bundle has no separate
+            // control entry, so the root fiber that owns the control child is
+            // disposed instead.
+            const rows = [...ctx.loader.entries()];
+            const target = rows.some(row => row.options.id === 'grok-search-control')
+              ? entry('grok-search-control') : entry('grok-search');
+            await target.fiber.dispose(); await ctx.loader.await(); return snapshot();
+          }
           if (op === 'plugin-manager-state') {
             const manager = ctx.get('pluginManager');
             if (!manager) throw new Error('Official PluginManager service absent.');

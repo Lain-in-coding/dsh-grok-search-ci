@@ -10,11 +10,11 @@ export const name = 'dsh-grok-search-route-verifier';
 export const inject = ['loader', 'profileContext'];
 export const ROUTE_COUNTER_SERVICE = 'grokSearchOriginalSearchCounter';
 
-export function apply(ctx) {
+export function apply(ctx, { counter: suppliedCounter = null } = {}) {
   const loadId = randomUUID();
   const injectSnapshot = structuredClone(webEntry(ctx).options.inject ?? null);
   const hostCounter = ctx.get(ROUTE_COUNTER_SERVICE);
-  const counter = hostCounter ?? createOriginalSearchCounter(ctx);
+  const counter = hostCounter ?? suppliedCounter ?? createOriginalSearchCounter(ctx);
   if (!hostCounter) ctx.provide(ROUTE_COUNTER_SERVICE, counter);
   let disposed = false;
   const state = { phase: 'idle', loadId, lastReceipt: null, error: null };
@@ -41,6 +41,6 @@ export function apply(ctx) {
   ctx.effect(() => () => {
     disposed = true;
     state.phase = 'disposed';
-    if (!hostCounter) counter.dispose?.();
+    if (!hostCounter && !suppliedCounter) counter.dispose?.();
   });
 }

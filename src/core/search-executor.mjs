@@ -5,7 +5,7 @@ import { runMcpSearch } from './mcp-search.mjs';
 const stoppedError = () => new GrokSearchError('GROK_SEARCH_STOPPING', '插件正在停止查询，请等待回收完成。');
 const reapError = () => new GrokSearchError('GROK_PROCESS_REAP_FAILED', '本次查询进程尚未回收，新查询已暂停。');
 
-export function createSearchExecutor({ snapshot, runQuery = runMcpSearch, budgetMs = 120_000, cleanupMs = 2_000, maxRunning = 4, maxQueued = 8 } = {}) {
+export function createSearchExecutor({ snapshot, runQuery = runMcpSearch, budgetMs = 120_000, cleanupMs = 2_000, maxRunning = 1, maxQueued = 8 } = {}) {
   if (typeof snapshot !== 'function' || typeof runQuery !== 'function') throw new TypeError('查询执行器需要配置快照和运行函数。');
   for (const [name, value] of Object.entries({ budgetMs, cleanupMs, maxRunning, maxQueued })) {
     if (!Number.isSafeInteger(value) || value < (name === 'maxQueued' ? 0 : 1)) throw new TypeError(name + ' 必须是有效整数。');
