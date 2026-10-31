@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -13,7 +14,7 @@ import {
 const PRODUCT_BUNDLE = 'dsh-grok-search';
 const options = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
-  if (!['--desktop-rc2', '--desktop-rc21', '--product-package'].includes(process.argv[index])
+  if (!['--desktop-rc2', '--desktop-rc21', '--product-package', '--first-use'].includes(process.argv[index])
     || !process.argv[index + 1]) throw new Error('Expected named Desktop and package arguments.');
   options.set(process.argv[index], process.argv[index + 1]);
 }
@@ -24,13 +25,16 @@ assert.deepEqual(runtimes.map(runtime => runtime.app.version),
   process.env.DSH_B2_ONLY_VERSION ? [process.env.DSH_B2_ONLY_VERSION] : targetVersions);
 const productTarball = resolve(options.get('--product-package'));
 if (!existsSync(productTarball)) throw new Error('Package tarball is missing: ' + productTarball);
+const firstUse = options.get('--first-use') === 'download';
+if (options.has('--first-use') && !firstUse) throw new Error('Expected --first-use download.');
 
-const { runId, directory } = freshRun('b2-plugin-manager-desktop');
+const { runId, directory } = freshRun(firstUse ? 'first-use-desktop' : 'b2-plugin-manager-desktop');
 const temporary = join(tmpdir(), 'dsh-deferred-desktop-manager-' + runId);
 const replacements = [[temporary, '<TEMPORARY_RUN>'], [dirname(productTarball), '<PRODUCT_PACKAGE>'],
   [dirname(process.execPath), '<NODE_INSTALL>'],
   ...runtimes.map(runtime => [dirname(runtime.executable), `<DESKTOP_${runtime.app.version}>`])];
-const sanitize = value => redact(String(value), replacements);
+const secrets = new Set();
+const sanitize = value => redact(String(value), replacements, [...secrets]);
 const safe = value => JSON.parse(sanitize(JSON.stringify(value)));
 const sleep = milliseconds => new Promise(done => setTimeout(done, milliseconds));
 const runtimeFiles = folder => readdirSync(join(project, folder), { withFileTypes: true }).flatMap(row =>
@@ -319,7 +323,12 @@ async function settingsDialogRendererFlow(host) {
     // The prior security probe writes via raw RPC outside the UI. Let the
     // controller poll observe its final revision before starting a key edit;
     // a stale secret revision is intentionally never auto-rebased.
-    await waitForRenderer(renderer, current => current.evaluate(`${q('#cfgTag')}?.textContent === 'Grok 共享配置'`));
+    // Production deliberately suspends polling in a hidden renderer. A raw
+    // RPC write outside the view does not wake it; foreground the isolated
+    // test page exactly as a user returning to the detail page would.
+    await renderer.send('Page.bringToFront');
+    await waitForRenderer(renderer, current => current.evaluate(`document.visibilityState === 'visible'
+      && ${q('#cfgTag')}?.textContent === 'Grok 共享配置'`));
     check('open Grok card', await click('.row[data-id=grok] .row-main'));
     check('fill synthetic key', await value('input[data-k=key]', 'dsh-offline-ui-key'));
     check('fill model', await value('input[data-k=model]', 'grok-ui-test-model'));
@@ -381,6 +390,8 @@ async function settingsDialogRendererFlow(host) {
   } catch (error) {
     writeJson(join(directory, currentVersion + '-settings-v74-dialog-failure.json'), safe({
       message: error.message, tests, exceptions: renderer.exceptions,
+      visibility: await renderer.evaluate('document.visibilityState'),
+      configTag: await renderer.evaluate(`${q('#cfgTag')}?.textContent ?? null`),
       operationError: await renderer.evaluate(`${q('.save-error')}?.textContent ?? null`),
       validationErrors: await renderer.evaluate(`(() => {
         const dialog=${q('#dialog')}; return [...(dialog?.querySelectorAll('.f-msg:not([hidden])') || [])]
@@ -461,7 +472,11 @@ async function start(runtime, folder, phase) {
     PNPM_HOME: join(temporary, 'pnpm-home'),
     PNPM_STORE_DIR: join(temporary, 'pnpm-store'),
     npm_config_update_notifier: 'false',
+    ...(firstUse ? { PATH: process.platform === 'win32'
+      ? join(process.env.SystemRoot ?? 'C:/Windows', 'System32')
+      : '/usr/bin:/bin:/usr/sbin:/sbin' } : {}),
   });
+  secrets.add(control.token);
   for (const name of ['pnpm-home', 'pnpm-store']) mkdirSync(join(temporary, name), { recursive: true });
   const prefix = runtime.app.version + '-' + phase + '-' + serial;
   const stdoutPath = join(directory, prefix + '-stdout.log');
@@ -689,6 +704,211 @@ async function nativeManagerRpc(host, method, args) {
   } finally { renderer.close(); }
 }
 
+async function firstUseStub() {
+  const key = 'dsh-first-use-' + randomUUID();
+  secrets.add(key);
+  const requests = [];
+  const server = createServer((request, response) => {
+    let length = 0, chunks = [];
+    request.on('data', chunk => {
+      length += chunk.length;
+      if (length <= 1024 * 1024) chunks.push(chunk);
+    });
+    request.on('end', () => {
+      let payload;
+      try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {}
+      chunks = [];
+      const authorized = request.headers.authorization === 'Bearer ' + key;
+      requests.push({ method: request.method, path: request.url,
+        authorizedWithSyntheticKey: authorized, model: payload?.model ?? null });
+      if (length > 1024 * 1024 || request.method !== 'POST'
+        || request.url !== '/v1/responses' || !authorized) {
+        response.writeHead(401, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        response.end(JSON.stringify({ error: { message: 'isolated first-use request rejected' } }));
+        return;
+      }
+      const text = 'isolated first-use Grok search succeeded';
+      response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end(JSON.stringify({ id: 'resp-' + requests.length, object: 'response', status: 'completed',
+        model: payload.model, output_text: text, output: [
+          { type: 'web_search_call', action: { sources: [{ url: 'https://example.invalid/first-use',
+            title: 'Isolated first-use source', description: text }] } },
+          { type: 'message', content: [{ type: 'output_text', text }] },
+        ] }));
+    });
+  });
+  await new Promise((done, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', done);
+  });
+  return { key, requests, baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+    close: () => new Promise((done, reject) => server.close(error => error ? reject(error) : done())) };
+}
+
+async function matchingFirstUseProcesses(executable) {
+  let command, args;
+  if (process.platform === 'win32') {
+    command = process.env.SystemRoot + '/System32/WindowsPowerShell/v1.0/powershell.exe';
+    args = ['-NoProfile', '-NonInteractive', '-Command',
+      "Get-CimInstance Win32_Process -Filter \"Name = 'grok-search-rs.exe'\" | Where-Object { $_.ExecutablePath -eq $env:DSH_FIRST_USE_PROGRAM } | Select-Object -ExpandProperty ProcessId"];
+  } else {
+    command = '/bin/ps';
+    args = ['-axo', 'pid=,command='];
+  }
+  const result = await commandResult(command, args, { timeoutMs: 10000,
+    env: { ...process.env, DSH_FIRST_USE_PROGRAM: executable }, sanitize });
+  assert.equal(result.exitCode, 0, 'Cannot inspect first-use program processes.');
+  return result.rawStdout.split(/\r?\n/).map(line => line.trim()).filter(line =>
+    process.platform === 'win32' ? /^\d+$/.test(line) : line.slice(line.search(/\s/)).trim() === executable)
+    .map(line => Number(line.split(/\s/, 1)[0]));
+}
+
+async function firstUseConfigure(host, stub) {
+  const renderer = await connectRenderer(host.debuggerPort, { requestTimeoutMs: 30000 });
+  const q = selector => `(() => {
+    const roots = [document.querySelector('[data-dsg-route]')?.shadowRoot,
+      document.querySelector('[data-dsg-layer]')?.shadowRoot];
+    return roots.map(root => root?.querySelector(${JSON.stringify(selector)})).find(Boolean);
+  })()`;
+  try {
+    await renderer.send('Page.bringToFront');
+    const open = await renderer.evaluate(`(() => {
+      const item=${q('.row[data-id=grok] .row-main')}; if (!item) return false; item.click(); return true;
+    })()`);
+    assert.equal(open, true, 'The first-use Grok card must be available.');
+    for (const [field, value] of [['url', stub.baseUrl], ['key', stub.key]]) {
+      const filled = await renderer.evaluate(`(() => {
+        const input=${q(`input[data-k=${field}]`)}; if (!input || input.readOnly) return false;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)});
+        input.dispatchEvent(new Event('input',{bubbles:true,composed:true})); return true;
+      })()`);
+      assert.equal(filled, true, 'First-use field is not editable: ' + field);
+    }
+    assert.equal(await renderer.evaluate(`(() => { const button=${q('[data-a=save]')};
+      if (!button || button.disabled) return false; button.click(); return true; })()`), true);
+    await waitForRenderer(renderer, current => current.evaluate(`Boolean(${q('#overlay')}?.hidden)`));
+    const saved = await renderer.evaluate(`(async () => {
+      const response=await fetch('/api/grokSearchSettings/snapshot',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({type:'client-request',rpcId:crypto.randomUUID(),method:'grokSearchSettings/snapshot',payload:{args:{}}})});
+      const result=(await response.json()).result;
+      if (!result?.ok) throw new Error(result?.error?.code || 'First-use settings snapshot failed.');
+      return result.value;
+    })()`);
+    assert.equal(saved.config.fields.grok_api_key.configured, true);
+    assert.equal(saved.config.fields.grok_api_key.source, 'file');
+    assert.equal(saved.config.fields.grok_api_url.value, stub.baseUrl);
+    assert.equal(saved.plugin.programConfigured, false);
+    assert.equal(saved.plugin.configSource, 'default');
+    assert.ok(!JSON.stringify(saved).includes(stub.key));
+    return { savedThroughProductionDialog: true, secretsRedacted: true,
+      configPath: saved.config.path, revision: saved.config.revision,
+      programOverrideRequired: false, configOverrideRequired: false, exceptions: renderer.exceptions };
+  } finally { renderer.close(); }
+}
+
+async function runFirstUse(runtime) {
+  currentVersion = runtime.app.version;
+  const requestedFolder = join(temporary, runtime.app.version);
+  await prepare(runtime, requestedFolder);
+  // macOS aliases /var to /private/var. Use the resolved run root for both the
+  // HOME-derived config and the profile cache; aliases are not a second file.
+  const folder = realpathSync(requestedFolder);
+  replacements.push([folder, '<TEMPORARY_RUN>/' + runtime.app.version]);
+  const configPath = join(folder, 'user/.config/grok-search-rs/config.toml');
+  const profile = join(folder, 'dsh-home/profiles/desktop');
+  const cache = join(profile, 'grok-search/runtime-cache');
+  assert.equal(existsSync(configPath), false);
+  assert.equal(existsSync(join(cache, 'active.json')), false);
+  const patchPath = join(profile, 'cordis.patch.yml');
+  const assertNoProductPatch = () => assert.doesNotMatch(readFileSync(patchPath, 'utf8'), /grok-search/,
+    'First use must not require a Grok entry or paths in the profile patch.');
+  assertNoProductPatch();
+  const stub = await firstUseStub();
+  let host, ready;
+  try {
+    host = await start(runtime, folder, 'first-use-install');
+    assert.equal(managerNames(await host.probe('plugin-manager-state')).includes(PRODUCT_BUNDLE), false);
+    const installed = await installBundle(host, productTarball, PRODUCT_BUNDLE);
+    assertManagerApplied(installed, PRODUCT_BUNDLE);
+    ready = await waitFor(host, state => {
+      if (state.productProgram?.phase === 'error') {
+        throw new Error('First-use preparation failed: ' + JSON.stringify(state.productProgram.error));
+      }
+      return state.productProgram?.phase === 'ready' && state.productControl?.phase === 'required'
+        && state.runtimeWeb?.searchProviderId === 'grok-search';
+    }, 'Automatic first-use download did not complete', 140000);
+    assert.equal(ready.productProgram.configuration.executable, false);
+    assert.equal(ready.productProgram.configuration.configPath, false);
+    assert.equal(ready.productProgram.configPath, configPath);
+    assert.equal(ready.productProgram.program.source, 'private-cache');
+    assert.equal(ready.productProgram.program.version, '0.1.26');
+    assert.equal(existsSync(configPath), false, 'Program preparation must not create shared config.');
+    const programPath = ready.productProgram.program.path;
+    assert.ok(programPath.startsWith(cache + (process.platform === 'win32' ? '\\' : '/')));
+    const active = JSON.parse(readFileSync(join(cache, 'active.json'), 'utf8'));
+    const activeHash = sha256(join(cache, 'active.json'));
+    assert.equal(active.sha256, ready.productProgram.program.sha256);
+    assert.equal(active.mcpHandshakeValidated, true);
+    assert.equal(active.credentialsValidated, false);
+    assert.equal(sha256(programPath), active.sha256);
+    const detail = await pluginManagerRendererSnapshot(host);
+    const initialUi = await settingsStopRendererFlow(host, 'first-use');
+    // The host's own onboarding writes ui-chat/ui-settings rows. That is not a
+    // product configuration edit; take the comparison after that navigation.
+    assertNoProductPatch();
+    const patchAfterOnboarding = sha256(patchPath);
+    const configured = await firstUseConfigure(host, stub);
+    assert.equal(configured.configPath, configPath);
+    assertNoProductPatch();
+    const first = await modelTurn(host, 'search');
+    assert.equal(first.isError, false, JSON.stringify(first));
+    assert.equal(first.afterCalls.original, first.beforeCalls.original);
+    assert.match(first.text, /isolated first-use/i);
+    const firstProcesses = await matchingFirstUseProcesses(programPath);
+    assert.equal(firstProcesses.length, 1, 'One managed program should remain for reuse.');
+    const second = await modelTurn(host, 'search');
+    assert.equal(second.isError, false);
+    assert.equal(second.afterCalls.original, second.beforeCalls.original);
+    const secondProcesses = await matchingFirstUseProcesses(programPath);
+    assert.deepEqual(secondProcesses, firstProcesses, 'Sequential first-use searches must reuse one process.');
+    const fetch = await modelTurn(host, 'fetch'), chat = await modelTurn(host, 'chat');
+    assert.equal(fetch.isError, false);
+    assert.equal(chat.isError, false);
+    assertNoProductPatch();
+    const disabled = await setBundleEnabled(host, PRODUCT_BUNDLE, false);
+    assertManagerApplied(disabled, PRODUCT_BUNDLE);
+    await waitFor(host, state => state.runtimeWeb?.searchProviderId === 'candidate-original'
+      && !state.productProgram, 'First-use native disable did not restore the original route.');
+    assert.deepEqual(await matchingFirstUseProcesses(programPath), []);
+    const enabled = await setBundleEnabled(host, PRODUCT_BUNDLE, true);
+    assertManagerApplied(enabled, PRODUCT_BUNDLE);
+    const reused = await waitFor(host, state => state.productProgram?.phase === 'ready'
+      && state.productControl?.phase === 'required', 'Re-enable did not reuse the prepared private program.');
+    assert.equal(reused.productProgram.program.path, programPath);
+    assert.equal(sha256(join(cache, 'active.json')), activeHash, 'Re-enable must not redownload the private program.');
+    const third = await modelTurn(host, 'search');
+    assert.equal(third.isError, false);
+    assert.equal(third.afterCalls.original, third.beforeCalls.original);
+    const exit = await close(host);
+    assert.equal(exit.exitCode, 0);
+    assert.equal(exit.forced, false);
+    assert.deepEqual(await matchingFirstUseProcesses(programPath), []);
+    assert.ok(stub.requests.length >= 2 && stub.requests.every(row => row.authorizedWithSyntheticKey));
+    return { installed, detail, initialUi, configured, program: { version: active.version,
+      source: 'private-cache', sha256: active.sha256, registry: active.registry,
+      downloadRegistry: active.downloadRegistry, mcpHandshakeValidated: true },
+      defaultConfigCreatedOnlyBySave: true, manualProfileEditRequired: false,
+      productPatchEntriesAdded: false, hostOnboardingMayWriteProfile: true,
+      profilePatchUnchangedAfterOnboarding: sha256(patchPath) === patchAfterOnboarding, hostRestartRequired: false,
+      queries: [first, second, third], sameManagedProcessReused: true, nativeDisableReenableValidated: true,
+      cacheReused: true, fetch, chat, upstream: { scope: 'loopback-only', syntheticKeyOnly: true,
+        requests: stub.requests }, exit, orphanPrograms: 0 };
+  } finally {
+    if (host) await close(host);
+    await stub.close();
+  }
+}
+
 async function runVersion(runtime) {
   currentVersion = runtime.app.version;
   const folder = join(temporary, runtime.app.version);
@@ -887,13 +1107,16 @@ const beforeHashes = Object.fromEntries(runtimes.map(runtime => [runtime.app.ver
   { executable: sha256(runtime.executable), asar: sha256(runtime.archivePath) }]));
 try {
   for (const runtime of runtimes) {
-    const evidence = await runVersion(runtime);
-    results.push({ version: runtime.app.version, scenario: 'official-plugin-manager-install-enable-disable-remove-restart',
+    const evidence = await (firstUse ? runFirstUse(runtime) : runVersion(runtime));
+    results.push({ version: runtime.app.version, scenario: firstUse
+      ? 'first-use-native-install-auto-download-default-config-save-search-hot-toggle-reuse'
+      : 'official-plugin-manager-install-enable-disable-remove-restart',
       status: 'pass', evidence });
   }
 } catch (error) {
   fatal = { version: currentVersion, message: error.message, stack: error.stack };
-  results.push({ version: currentVersion, scenario: 'official-plugin-manager-install-enable-disable-remove-restart',
+  results.push({ version: currentVersion, scenario: firstUse ? 'first-use-auto-download'
+    : 'official-plugin-manager-install-enable-disable-remove-restart',
     status: 'fail', error: { message: error.message } });
 } finally {
   for (const child of children) await close(child);
@@ -918,7 +1141,11 @@ try {
     originalDesktopRuntimeValidated: passed,
     pluginManagerValidated: passed,
     pluginManagerUiDomValidated: passed && results.length === runtimes.length
-      && results.every(row => row.evidence?.uiDomValidated === true),
+      && results.every(row => firstUse ? row.evidence?.configured?.savedThroughProductionDialog === true
+        : row.evidence?.uiDomValidated === true),
+    firstUseAutoDownloadValidated: passed && firstUse,
+    realProviderCredentialsValidated: false,
+    globalInstallationChanged: false,
     desktopUiDomValidated: false,
     cleanupValidated: passed,
     releaseTransactionDesktopValidated: false,
@@ -939,6 +1166,9 @@ try {
       forced: row.forced ?? false })),
   };
   writeJson(join(directory, 'summary.json'), safe(summary));
-  console.log(JSON.stringify(safe(summary), null, 2));
+  console.log(JSON.stringify(safe({ runId, status: summary.status, counts: summary.counts, fatal,
+    sourcesUnchanged, protocolAssociationUnchanged: protocolUnchanged,
+    firstUseAutoDownloadValidated: summary.firstUseAutoDownloadValidated,
+    evidence: join(directory, 'summary.json') }), null, 2));
   process.exitCode = passed ? 0 : 1;
 }

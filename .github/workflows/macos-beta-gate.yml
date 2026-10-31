@@ -12,6 +12,11 @@ on:
         description: SHA-256 of the locally frozen beta tarball; reject any different package.
         required: true
         type: string
+      first_use_only:
+        description: Run only the added first-use and PluginManager gates when the shipped runtime and tarball are unchanged; retain the earlier full-gate evidence.
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -89,6 +94,7 @@ jobs:
           defaults write -g AppleLocale zh_CN
           test "$(defaults read -g AppleLanguages | sed -n 2p | tr -d ' ,"')" = "zh-Hans"
       - name: Prepare isolated Grok MCP and local Responses stub
+        if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -177,6 +183,7 @@ jobs:
           test -x "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
           test -x "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
       - name: Run isolated product install gate
+        if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -188,6 +195,7 @@ jobs:
             --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --product-package "$TARBALL"
       - name: Run product Desktop control gate
+        if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -197,6 +205,7 @@ jobs:
             --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --case product
       - name: Run M0-04 Desktop gate
+        if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -207,6 +216,7 @@ jobs:
             --case m0-04 \
             --grok-program "$RUNNER_TEMP/grok/grok-search-rs"
       - name: Run native hot-toggle and sources-only Desktop gates
+        if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -216,6 +226,7 @@ jobs:
             --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --case ux
       - name: Run isolated internal candidate gate
+        if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -236,6 +247,17 @@ jobs:
             --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --product-package "$TARBALL"
+      - name: Run new-user automatic program and configuration gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(find "$RUNNER_TEMP/beta" -name 'dsh-grok-search-0.1.0-beta.1.tgz' -print -quit)"
+          export DSH_B2_TARGET_VERSIONS=0.2.1-rc.2,0.2.1-rc.3
+          node scripts/b2-plugin-manager-desktop.mjs \
+            --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --product-package "$TARBALL" \
+            --first-use download
       - name: Preserve macOS evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -247,11 +269,13 @@ jobs:
             artifacts/internal-candidate-real/**/summary.json
             artifacts/ux-lifecycle-desktop/**/summary.json
             artifacts/ux-lifecycle-desktop/**/*sources-only*.json
+            artifacts/first-use-desktop/**/summary.json
+            artifacts/first-use-desktop/**/*-ui.json
             artifacts/macos-grok-protocol/receipt.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Stop local Grok Responses stub
-        if: always()
+        if: ${{ always() && !inputs.first_use_only }}
         shell: bash
         run: |
           # Always attempt every fallback, even when the graceful shutdown request fails.
@@ -307,6 +331,8 @@ jobs:
             artifacts/internal-candidate-real/**/summary.json
             artifacts/ux-lifecycle-desktop/**/summary.json
             artifacts/ux-lifecycle-desktop/**/*sources-only*.json
+            artifacts/first-use-desktop/**/summary.json
+            artifacts/first-use-desktop/**/*-ui.json
             artifacts/macos-grok-protocol/receipt.json
             ${{ runner.temp }}/grok/stub-receipt.json
           if-no-files-found: ignore
