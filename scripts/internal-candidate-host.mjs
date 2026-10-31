@@ -94,7 +94,9 @@ try {
   for (let attempt = 0; attempt < 20 && port === undefined; attempt++) {
     const reservation = createServer(); const candidate = randomInt(20_000, 60_000);
     const bound = await new Promise((done, fail) => {
-      reservation.once('error', error => error.code === 'EADDRINUSE' ? done(false) : fail(error));
+      // Windows Hyper-V/WSL may reserve part of this range. Like an occupied
+      // port, a denied reservation is not a usable probe endpoint; try another.
+      reservation.once('error', error => ['EADDRINUSE', 'EACCES'].includes(error.code) ? done(false) : fail(error));
       reservation.listen(candidate, '127.0.0.1', () => done(true));
     });
     if (!bound) continue;

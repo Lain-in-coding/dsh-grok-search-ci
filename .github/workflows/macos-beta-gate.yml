@@ -257,7 +257,8 @@ jobs:
             --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --product-package "$TARBALL" \
-            --first-use download
+            --first-use download \
+            --diagnostics loopback
       - name: Preserve macOS evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -271,6 +272,10 @@ jobs:
             artifacts/ux-lifecycle-desktop/**/*sources-only*.json
             artifacts/first-use-desktop/**/summary.json
             artifacts/first-use-desktop/**/*-ui.json
+            artifacts/diagnostics-desktop/**/summary.json
+            artifacts/diagnostics-desktop/**/*diagnostics-flow.json
+            artifacts/diagnostics-desktop/**/*diagnostics-failure.json
+            artifacts/diagnostics-desktop/**/*diagnostics*-ui.png
             artifacts/macos-grok-protocol/receipt.json
           if-no-files-found: ignore
           retention-days: 7
@@ -333,6 +338,10 @@ jobs:
             artifacts/ux-lifecycle-desktop/**/*sources-only*.json
             artifacts/first-use-desktop/**/summary.json
             artifacts/first-use-desktop/**/*-ui.json
+            artifacts/diagnostics-desktop/**/summary.json
+            artifacts/diagnostics-desktop/**/*diagnostics-flow.json
+            artifacts/diagnostics-desktop/**/*diagnostics-failure.json
+            artifacts/diagnostics-desktop/**/*diagnostics*-ui.png
             artifacts/macos-grok-protocol/receipt.json
             ${{ runner.temp }}/grok/stub-receipt.json
           if-no-files-found: ignore

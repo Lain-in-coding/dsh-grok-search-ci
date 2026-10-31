@@ -14,7 +14,7 @@ import {
 const PRODUCT_BUNDLE = 'dsh-grok-search';
 const options = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
-  if (!['--desktop-rc2', '--desktop-rc21', '--product-package', '--first-use'].includes(process.argv[index])
+  if (!['--desktop-rc2', '--desktop-rc21', '--product-package', '--first-use', '--diagnostics'].includes(process.argv[index])
     || !process.argv[index + 1]) throw new Error('Expected named Desktop and package arguments.');
   options.set(process.argv[index], process.argv[index + 1]);
 }
@@ -27,8 +27,13 @@ const productTarball = resolve(options.get('--product-package'));
 if (!existsSync(productTarball)) throw new Error('Package tarball is missing: ' + productTarball);
 const firstUse = options.get('--first-use') === 'download';
 if (options.has('--first-use') && !firstUse) throw new Error('Expected --first-use download.');
+const diagnostics = options.get('--diagnostics') === 'loopback';
+if (options.has('--diagnostics') && (!diagnostics || !firstUse)) {
+  throw new Error('--diagnostics loopback requires --first-use download.');
+}
 
-const { runId, directory } = freshRun(firstUse ? 'first-use-desktop' : 'b2-plugin-manager-desktop');
+const { runId, directory } = freshRun(diagnostics ? 'diagnostics-desktop'
+  : firstUse ? 'first-use-desktop' : 'b2-plugin-manager-desktop');
 const temporary = join(tmpdir(), 'dsh-deferred-desktop-manager-' + runId);
 const replacements = [[temporary, '<TEMPORARY_RUN>'], [dirname(productTarball), '<PRODUCT_PACKAGE>'],
   [dirname(process.execPath), '<NODE_INSTALL>'],
@@ -177,6 +182,15 @@ async function settingsRpcSecurityFlow(host) {
 async function pluginManagerRendererSnapshot(host) {
   const renderer = await connectRenderer(host.debuggerPort);
   try {
+    await renderer.send('Page.bringToFront');
+    // Sidebar navigation can preserve the current package detail. Return via
+    // the host's own breadcrumb before expecting the installed-list heading.
+    await renderer.evaluate(`(() => {
+      const back = [...document.querySelectorAll('button')]
+        .find(item => /^(返回插件|Back to plugins)$/.test(item.getAttribute('aria-label') || '')
+          && item.getClientRects().length > 0);
+      back?.click(); return Boolean(back);
+    })()`);
     await waitForRenderer(renderer, current => current.evaluate(`[...document.querySelectorAll('button,[role="button"]')]
       .some(item => (item.getAttribute('aria-label') || item.innerText || '').trim() === '插件')`));
     const opened = await renderer.evaluate(`(() => {
@@ -707,6 +721,9 @@ async function nativeManagerRpc(host, method, args) {
 async function firstUseStub() {
   const key = 'dsh-first-use-' + randomUUID();
   secrets.add(key);
+  const invalidKey = key + '-invalid';
+  secrets.add(invalidKey);
+  const state = { mode: 'ok' };
   const requests = [];
   const server = createServer((request, response) => {
     let length = 0, chunks = [];
@@ -718,13 +735,40 @@ async function firstUseStub() {
       let payload;
       try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {}
       chunks = [];
-      const authorized = request.headers.authorization === 'Bearer ' + key;
-      requests.push({ method: request.method, path: request.url,
+      const pathname = new URL(request.url, 'http://127.0.0.1').pathname;
+      const provider = pathname.startsWith('/tavily/') ? 'tavily'
+        : pathname.startsWith('/exa/') ? 'exa' : pathname === '/tinyfish' ? 'tinyfish'
+          : pathname.startsWith('/firecrawl/') ? 'firecrawl' : 'grok';
+      const credential = ['exa', 'tinyfish'].includes(provider)
+        ? request.headers['x-api-key'] : request.headers.authorization?.replace(/^Bearer /, '');
+      const authorized = credential === key || credential === invalidKey;
+      requests.push({ method: request.method, path: pathname,
+        provider, mode: state.mode, keySlot: credential === invalidKey ? 'invalid' : 'valid',
         authorizedWithSyntheticKey: authorized, model: payload?.model ?? null });
-      if (length > 1024 * 1024 || request.method !== 'POST'
-        || request.url !== '/v1/responses' || !authorized) {
+      const validContract = provider === 'grok' ? request.method === 'POST' && pathname === '/v1/responses'
+        : provider === 'tinyfish' ? request.method === 'GET' && pathname === '/tinyfish'
+          : request.method === 'POST' && pathname === (provider === 'firecrawl'
+            ? '/firecrawl/v2/search' : '/' + provider + '/search');
+      if (length > 1024 * 1024 || !validContract || !authorized) {
         response.writeHead(401, { 'content-type': 'application/json', 'cache-control': 'no-store' });
         response.end(JSON.stringify({ error: { message: 'isolated first-use request rejected' } }));
+        return;
+      }
+      const failed = state.mode === 'failed' || credential === invalidKey
+        || state.mode === 'partial' && ['grok', 'tinyfish', 'firecrawl'].includes(provider);
+      if (failed) {
+        const code = provider === 'firecrawl' ? 500 : provider === 'tinyfish' ? 403 : 401;
+        response.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        response.end(JSON.stringify({ error: { message: 'isolated test failure' } }));
+        return;
+      }
+      if (provider !== 'grok') {
+        const source = { url: 'https://example.invalid/integrated/' + provider,
+          title: 'Integrated ' + provider + ' result', content: 'loopback source',
+          summary: 'loopback source', description: 'loopback source', snippet: 'loopback source', score: 1 };
+        response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        response.end(JSON.stringify(provider === 'firecrawl'
+          ? { success: true, data: { web: [source] } } : { results: [source] }));
         return;
       }
       const text = 'isolated first-use Grok search succeeded';
@@ -741,7 +785,8 @@ async function firstUseStub() {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', done);
   });
-  return { key, requests, baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+  return { key, invalidKey, state, requests, baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+    origin: `http://127.0.0.1:${server.address().port}`,
     close: () => new Promise((done, reject) => server.close(error => error ? reject(error) : done())) };
 }
 
@@ -804,6 +849,152 @@ async function firstUseConfigure(host, stub) {
       configPath: saved.config.path, revision: saved.config.revision,
       programOverrideRequired: false, configOverrideRequired: false, exceptions: renderer.exceptions };
   } finally { renderer.close(); }
+}
+
+async function productionDiagnosticsFlow(host, stub) {
+  const renderer = await connectRenderer(host.debuggerPort, { requestTimeoutMs: 45000 });
+  const q = selector => `(() => {
+    const roots = [document.querySelector('[data-dsg-route]')?.shadowRoot,
+      document.querySelector('[data-dsg-layer]')?.shadowRoot];
+    return roots.map(root => root?.querySelector(${JSON.stringify(selector)})).find(Boolean);
+  })()`;
+  const click = selector => renderer.evaluate(`(() => { const element=${q(selector)};
+    if (!element || element.disabled) return false; element.click(); return true; })()`);
+  const call = (method, request) => renderer.evaluate(`(async () => {
+    const method=${JSON.stringify('grokSearchSettings/' + method)};
+    const response=await fetch('/api/'+method,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'client-request',rpcId:crypto.randomUUID(),method,
+        payload:{args:${JSON.stringify(request === undefined ? {} : { request })}}})});
+    const result=(await response.json()).result;
+    if (!result?.ok) throw new Error(result?.error?.code || 'Settings RPC rejected.');
+    return result.value;
+  })()`);
+  const snapshotUi = () => renderer.evaluate(`(() => {
+    const root=${q('.dsg-root')}; return {
+      state: root?.querySelector('#routeCard')?.dataset.s,
+      status: root?.querySelector('#statusText')?.textContent,
+      announcer: ${q('#announcer')}?.textContent,
+      rows:[...(root?.querySelectorAll('.row[data-id]')||[])].map(row=>({
+        id:row.dataset.id,state:row.dataset.st,
+        checked:row.querySelector('.switch')?.getAttribute('aria-checked'),
+        fault:row.querySelector('.row-fault')?.getAttribute('aria-hidden')==='false'
+          ? row.querySelector('.row-fault')?.textContent : null,
+      })),
+      keys:[...(root?.querySelectorAll('.s-node[data-id]')||[])].map(node=>({
+        id:node.dataset.id,dots:[...node.querySelectorAll('.s-dot')].map(dot=>dot.dataset.tone),
+      })),
+    };
+  })()`);
+  const runTest = async () => {
+    assert.equal(await click('#testBtn'), true);
+    await waitForRenderer(renderer, current => current.evaluate(`${q('#testPop')}?.hidden === false`));
+    assert.equal(await click('[data-pop=go]'), true);
+  };
+  const completed = () => waitForRenderer(renderer, current => current.evaluate(`
+    !${q('#testBtn')}?.disabled && ${q('#announcer')}?.textContent?.includes('已检查全部开启')
+  `), { timeoutMs: 90000 });
+  const tests = [];
+  const check = (name, condition) => {
+    tests.push({ name, passed: condition === true });
+    assert.equal(condition, true, name);
+  };
+  try {
+    await renderer.send('Page.bringToFront');
+    await renderer.send('Emulation.setDeviceMetricsOverride', {
+      width: 1360, height: 1000, deviceScaleFactor: 1, mobile: false,
+    });
+    const preferences = await call('preferences');
+    await call('savePreferences', { expectedRevision: preferences.revision,
+      value: { ...preferences.value, githubEnabled: false } });
+    const current = await call('snapshot');
+    await call('save', { expectedRevision: current.config.revision, updates: {
+      tavily_api_url: stub.origin + '/tavily', tavily_api_key: stub.invalidKey + ',' + stub.key,
+      exa_api_url: stub.origin + '/exa', exa_api_key: stub.key,
+      tinyfish_search_api_url: stub.origin + '/tinyfish', tinyfish_api_key: stub.key,
+      firecrawl_api_url: stub.origin + '/firecrawl', firecrawl_api_key: stub.key,
+      tavily_enabled: true, exa_enabled: true, tinyfish_enabled: true, firecrawl_enabled: true,
+      source_providers: ['exa', 'tavily', 'tinyfish', 'firecrawl'], default_extra_sources: 4,
+    } });
+    // After an out-of-view RPC update, wait for the production polling/visible
+    // refresh to import it. Never touch the controller's internal state.
+    await waitForRenderer(renderer, current => current.evaluate(`['exa','tavily','tinyfish','firecrawl']
+      .every(id=>${q('.dsg-root')}?.querySelector('.row[data-id='+id+'] .switch')
+        ?.getAttribute('aria-checked')==='true')
+      && ${q('#rowsSupp .row')}?.dataset.id==='exa'`), { timeoutMs: 60000 });
+    stub.state.mode = 'partial';
+    const before = stub.requests.length;
+    await runTest();
+    await waitForRenderer(renderer, current => current.evaluate(`${q('.row[data-id=tinyfish]')}
+      ?.classList.contains('is-fault-flash')`), { timeoutMs: 60000 });
+    check('real-response-triggers-transient-error-border',
+      await renderer.evaluate(`${q('.row[data-id=tinyfish]')}?.classList.contains('is-fault-flash')`));
+    await completed();
+    const partial = await snapshotUi(), calls = stub.requests.slice(before);
+    check('all-four-sources-tested-after-first-source-success',
+      ['exa', 'tavily', 'tinyfish', 'firecrawl'].every(id => calls.some(row => row.provider === id)));
+    check('both-Tavily-keys-tested', ['valid', 'invalid'].every(slot =>
+      calls.some(row => row.provider === 'tavily' && row.keySlot === slot)));
+    check('Grok-failed-backup-shown-without-search-failure', partial.state === 'fallback'
+      && partial.status === '已静默回退' && partial.announcer.includes('已静默回退'));
+    check('Tavily-partial-key-status-is-accurate', partial.keys.some(row =>
+      row.id === 'tavily' && row.dots.includes('ok') && row.dots.includes('err')));
+    check('TinyFish-error-has-real-403-short-code', partial.rows.some(row =>
+      row.id === 'tinyfish' && row.fault?.includes('403')));
+    check('Firecrawl-error-has-real-500-short-code', partial.rows.some(row =>
+      row.id === 'firecrawl' && row.fault?.includes('500')));
+    check('diagnosis-does-not-export-key-values', !JSON.stringify(partial).includes(stub.key));
+    writeFileSync(join(directory, currentVersion + '-diagnostics-partial-ui.png'),
+      Buffer.from((await renderer.send('Page.captureScreenshot', { format: 'png' })).data, 'base64'),
+      { flag: 'wx' });
+
+    // The ordinary sources-only query must stop at Exa, unlike the full test.
+    assert.equal(await click('.row[data-id=grok] .switch'), true);
+    await waitForRenderer(renderer, current => current.evaluate(
+      `${q('.row[data-id=grok] .switch')}?.getAttribute('aria-checked')==='false'`));
+    const originalBefore = (await host.probe('snapshot')).calls.original;
+    const searchStart = stub.requests.length;
+    const ordinary = await host.probe('product-query-result');
+    const ordinaryRequests = stub.requests.slice(searchStart);
+    check('ordinary-sources-only-search-stops-at-first-success',
+      ordinary.sources?.[0]?.url === 'https://example.invalid/integrated/exa'
+      && ordinaryRequests.length === 1 && ordinaryRequests[0].provider === 'exa');
+    check('ordinary-fallback-does-not-call-official-search',
+      (await host.probe('snapshot')).calls.original === originalBefore);
+    stub.state.mode = 'failed';
+    const allFailedStart = stub.requests.length;
+    await runTest();
+    await completed();
+    const failed = await snapshotUi();
+    check('all-failed-diagnosis-is-clear', failed.state === 'err'
+      && failed.status === '搜索失败' && failed.announcer.includes('全部不可用'));
+    check('disabled-Grok-is-not-tested', !stub.requests.slice(allFailedStart)
+      .some(row => row.provider === 'grok'));
+    check('failed-diagnosis-keeps-all-source-status-codes',
+      ['exa', 'tavily', 'tinyfish', 'firecrawl'].every(id => failed.rows.some(row =>
+        row.id === id && row.fault?.match(/401|403|500/))));
+    check('real-diagnosis-no-page-exception', renderer.exceptions.length === 0);
+    writeFileSync(join(directory, currentVersion + '-diagnostics-all-failed-ui.png'),
+      Buffer.from((await renderer.send('Page.captureScreenshot', { format: 'png' })).data, 'base64'),
+      { flag: 'wx' });
+    const evidence = { passed: tests.length, failed: 0, tests, partial, allFailed: failed,
+      transientErrorBorderObserved: true, syntheticKeysOnly: true, upstream: 'loopback',
+      realPaidProviderValidated: false, ordinarySearchRequests: ordinaryRequests,
+      exceptions: renderer.exceptions };
+    writeJson(join(directory, currentVersion + '-diagnostics-flow.json'), safe(evidence));
+    return evidence;
+  } catch (error) {
+    writeJson(join(directory, currentVersion + '-diagnostics-failure.json'), safe({
+      message: error.message, tests, ui: await snapshotUi(), exceptions: renderer.exceptions,
+      visibility: await renderer.evaluate('document.visibilityState'),
+      mountedViews: await renderer.evaluate('document.querySelectorAll("[data-dsg-route]").length'),
+      backend: await call('snapshot').catch(error => ({ error: error.message })),
+      requests: stub.requests,
+    }));
+    throw error;
+  } finally {
+    stub.state.mode = 'ok';
+    renderer.close();
+  }
 }
 
 async function runFirstUse(runtime) {
@@ -889,6 +1080,7 @@ async function runFirstUse(runtime) {
     const third = await modelTurn(host, 'search');
     assert.equal(third.isError, false);
     assert.equal(third.afterCalls.original, third.beforeCalls.original);
+    const diagnosticFlow = diagnostics ? await productionDiagnosticsFlow(host, stub) : null;
     const exit = await close(host);
     assert.equal(exit.exitCode, 0);
     assert.equal(exit.forced, false);
@@ -901,7 +1093,7 @@ async function runFirstUse(runtime) {
       productPatchEntriesAdded: false, hostOnboardingMayWriteProfile: true,
       profilePatchUnchangedAfterOnboarding: sha256(patchPath) === patchAfterOnboarding, hostRestartRequired: false,
       queries: [first, second, third], sameManagedProcessReused: true, nativeDisableReenableValidated: true,
-      cacheReused: true, fetch, chat, upstream: { scope: 'loopback-only', syntheticKeyOnly: true,
+      cacheReused: true, fetch, chat, diagnosticFlow, upstream: { scope: 'loopback-only', syntheticKeyOnly: true,
         requests: stub.requests }, exit, orphanPrograms: 0 };
   } finally {
     if (host) await close(host);
@@ -1144,6 +1336,8 @@ try {
       && results.every(row => firstUse ? row.evidence?.configured?.savedThroughProductionDialog === true
         : row.evidence?.uiDomValidated === true),
     firstUseAutoDownloadValidated: passed && firstUse,
+    productionDiagnosticsUiValidated: passed && diagnostics && results.length === runtimes.length
+      && results.every(row => row.evidence?.diagnosticFlow?.failed === 0),
     realProviderCredentialsValidated: false,
     globalInstallationChanged: false,
     desktopUiDomValidated: false,
