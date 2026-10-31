@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { discoverGrokCandidates, findExistingGrok, grokPlatformPackage, inspectGrokProgram } from '../src/core/program-discovery.mjs';
 const setup = () => mkdtempSync(join(tmpdir(), 'dsh-discovery-test-'));
 const makeFile = path => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, 'offline-fixture'); return path; };
+const nativeBinary = process.platform === 'win32' ? 'grok-search-rs.exe' : 'grok-search-rs';
+const nativePackage = grokPlatformPackage(process.platform, process.arch);
 
 test('three declared platform package mappings are explicit', () => {
   assert.match(grokPlatformPackage('win32', 'x64'), /win32-x64$/);
@@ -38,11 +40,13 @@ test('PATH and cargo discovery de-duplicate the same native program', () => {
   assert.equal(rows.length, 1);
   assert.equal(rows[0].path, binary);
 });
-test('Unix npm prefix/lib/node_modules layout resolves the native package', () => {
+test('npm prefix/lib/node_modules layout resolves the host-native platform package', () => {
   const root = setup(), bin = join(root, 'bin');
   mkdirSync(bin);
-  const binary = makeFile(join(root, 'lib/node_modules/grok-search-rs/node_modules/@epsiekygrr_zedxx/grok-search-rs-linux-x64/bin/grok-search-rs'));
-  const rows = discoverGrokCandidates({ env: { PATH: bin, HOME: root }, platform: 'linux', arch: 'x64' });
+  const binary = makeFile(join(root, 'lib/node_modules/grok-search-rs/node_modules', nativePackage, 'bin', nativeBinary));
+  // The filesystem belongs to the current OS. A POSIX ':' PATH fabricated on
+  // Windows would split the drive letter and accidentally depend on cwd's disk.
+  const rows = discoverGrokCandidates({ env: { PATH: bin, HOME: root } });
   assert.equal(rows.length, 1);
   assert.equal(rows[0].path, binary);
   assert.equal(rows[0].source, 'npm');
@@ -61,15 +65,15 @@ test('no installed candidate reports missing without downloading', async () => {
 });
 test('an invalid discovered program is an explicit error, not permission to download', async () => {
   const root = setup();
-  makeFile(join(root, 'grok-search-rs'));
-  await assert.rejects(findExistingGrok({ env: { PATH: root, HOME: root }, platform: 'linux', arch: 'x64',
+  makeFile(join(root, nativeBinary));
+  await assert.rejects(findExistingGrok({ env: { PATH: root, HOME: root },
     inspect: async () => { throw Object.assign(new Error('unsupported'), { code: 'GROK_VERSION_UNVERIFIED' }); } }),
   error => error.code === 'GROK_VERSION_UNVERIFIED');
 });
 test('validated existing program returns its source and identity', async () => {
   const root = setup();
-  const binary = makeFile(join(root, 'grok-search-rs'));
-  const value = await findExistingGrok({ env: { PATH: root, HOME: root }, platform: 'linux', arch: 'x64',
+  const binary = makeFile(join(root, nativeBinary));
+  const value = await findExistingGrok({ env: { PATH: root, HOME: root },
     inspect: async path => ({ path, version: '0.1.26', sha256: 'a'.repeat(64) }) });
   assert.equal(value.found, true);
   assert.equal(value.source, 'path');
@@ -82,5 +86,9 @@ test('pre-cancelled inspection never starts a process', async () => {
   await assert.rejects(inspectGrokProgram(process.execPath, { signal: controller.signal }), error => error === reason);
 });
 test('other executables cannot masquerade as Grok', async () => {
-  await assert.rejects(inspectGrokProgram(process.execPath), error => error.code === 'GROK_PROGRAM_IDENTITY_INVALID');
+  // Recent Linux Node binaries exceed the Grok-specific size bound and would
+  // be rejected before their identity check. A small native system executable
+  // reaches --version on each OS and proves that its output is not Grok.
+  const other = process.platform === 'win32' ? process.execPath : '/bin/echo';
+  await assert.rejects(inspectGrokProgram(other), error => error.code === 'GROK_PROGRAM_IDENTITY_INVALID');
 });
