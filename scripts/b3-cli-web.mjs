@@ -68,6 +68,7 @@ function parseArgs(argv) {
     ['--pnpm-entry', 'pnpmEntry'],
     ['--pnpm-store', 'pnpmStore'],
     ['--pnpm-cache', 'pnpmCache'],
+    ['--first-use', 'firstUse'],
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
@@ -92,6 +93,8 @@ function parseArgs(argv) {
   if (!CASES.has(options.case)) {
     throw new Error(`Unsupported --case ${JSON.stringify(options.case)}; expected smoke, stop or full.`);
   }
+  if (options.firstUse && options.firstUse !== 'download') throw new Error('Expected --first-use download.');
+  if (options.firstUse && options.case !== 'full') throw new Error('First-use verification requires --case full.');
   options.dshCli = resolve(options.dshCli);
   options.productPackage = resolve(options.productPackage);
   options.grokLinuxArchive = resolve(options.grokLinuxArchive);
@@ -756,6 +759,7 @@ async function windowsBootstrap(options) {
         '--product-package', paths.productPackage,
         '--grok-linux-archive', paths.grokLinuxArchive,
         ...(options.browserExecutable ? ['--browser-executable', options.browserExecutable] : []),
+        ...(options.firstUse ? ['--first-use', options.firstUse] : []),
         '--case', options.case,
         '--staged-runtime-archive', archive,
         '--bootstrap-file', bootstrapFile,
@@ -1042,6 +1046,7 @@ function compactEvent(event) {
 }
 
 async function linuxWorker(options) {
+  const firstUse = options.firstUse === 'download';
   const runtimeFiles = folder => readdirSync(join(PROJECT_ROOT, folder), { withFileTypes: true })
     .flatMap(row => row.isDirectory() ? runtimeFiles(folder + '/' + row.name) : [folder + '/' + row.name]);
   const sourceHashesBefore = ['scripts/b3-cli-web.mjs', 'scripts/lib/renderer-cdp.mjs', 'fixtures/cli-web/fixture.mjs',
@@ -1095,6 +1100,7 @@ async function linuxWorker(options) {
   let grokArchiveSha256 = null;
   let grokDirectProtocol = null;
   let grokRequestsAfterTakeover = null;
+  let firstUseProgramReceipt = null;
   let lifecycleObservation = null;
   const heartbeat = setInterval(() => {
     try {
@@ -1342,7 +1348,7 @@ async function linuxWorker(options) {
     });
 
     const dshEnv = {
-      PATH: `${pnpmBinDir}:${process.env.PATH}`,
+      PATH: `${pnpmBinDir}:${firstUse ? '/usr/local/bin:/usr/bin:/bin' : process.env.PATH}`,
       HOME: home,
       LANG: process.env.LANG ?? 'C.UTF-8',
       LC_ALL: process.env.LC_ALL ?? '',
@@ -1553,8 +1559,8 @@ async function linuxWorker(options) {
     grokResponsesStub = await startGrokResponsesStub();
     const grokConfigDirectory = join(runRoot, 'grok-config');
     mkdirSync(grokConfigDirectory, { recursive: false });
-    grokConfigPath = join(grokConfigDirectory, 'config.toml');
-    writeFileSync(grokConfigPath, [
+    const directConfigPath = join(grokConfigDirectory, 'config.toml');
+    writeFileSync(directConfigPath, [
       `grok_api_url = "${grokResponsesStub.baseUrl}"`,
       `grok_api_key = "${GROK_TEST_API_KEY}"`,
       'grok_model = "grok-4-1-fast-reasoning"',
@@ -1576,7 +1582,7 @@ async function linuxWorker(options) {
     });
     const grokDirectProtocolCommand = await runGrokProtocolProbe({
       executable: grokExecutable,
-      configPath: grokConfigPath,
+      configPath: directConfigPath,
       home,
       tempDirectory: join(runRoot, 'tmp'),
       workspace,
@@ -1617,6 +1623,8 @@ async function linuxWorker(options) {
       process: grokDirectProtocol.process,
     });
 
+    grokConfigPath = firstUse ? join(home, '.config/grok-search-rs/config.toml') : directConfigPath;
+    if (firstUse) check('first-use-default-config-absent', !existsSync(grokConfigPath));
     const profilePatch = [
       { id: 'agent-default-model', config: { provider: 'candidate-offline', model: 'fixture-native' } },
       {
@@ -1670,7 +1678,7 @@ async function linuxWorker(options) {
           },
         }],
       },
-      {
+      ...(!firstUse ? [{
         id: 'grok-search',
         config: {
           executable: grokExecutable,
@@ -1678,7 +1686,7 @@ async function linuxWorker(options) {
           configPath: grokConfigPath,
           budgetMs: 30_000,
         },
-      },
+      }] : []),
     ];
     writeFileSync(join(profile, 'cordis.patch.yml'), JSON.stringify(profilePatch, null, 2) + '\n');
     evidence.json('profile-patch-applied.json', profilePatch);
@@ -1715,7 +1723,7 @@ async function linuxWorker(options) {
       agentPreset: { registryDefault: 'cli-web-fixture', toolWeb: true },
       grokExecutable: '<RUN_ROOT>/grok/grok-search-rs',
       grokVersion: GROK_VERSION,
-      grokConfigPath: '<RUN_ROOT>/grok-config/config.toml',
+      grokConfigPath: firstUse ? '<RUN_ROOT>/home/.config/grok-search-rs/config.toml' : '<RUN_ROOT>/grok-config/config.toml',
       grokApiStub: grokResponsesStub.baseUrl,
     });
 
@@ -1929,6 +1937,41 @@ async function linuxWorker(options) {
       }
       return body.value;
     };
+
+    if (firstUse) {
+      const firstProgram = await waitFor(async () => {
+        const state = await probe();
+        if (state.program?.phase === 'error') throw new Error('First-use program preparation: ' + JSON.stringify(state.program.error));
+        return state.program?.phase === 'ready' ? state.program : null;
+      }, 140000, 'first-use private program download');
+      const cache = join(profile, 'grok-search/runtime-cache');
+      check('first-use-private-program-auto-ready', firstProgram.program?.source === 'private-cache'
+        && firstProgram.program.version === GROK_VERSION
+        && firstProgram.program.path.startsWith(cache + '/')
+        && firstProgram.configuration.executable === false && firstProgram.configuration.configPath === false
+        && firstProgram.configPath === grokConfigPath, { program: firstProgram });
+      check('first-use-config-still-absent-after-download', !existsSync(grokConfigPath));
+      grokExecutable = firstProgram.program.path;
+      firstUseProgramReceipt = JSON.parse(readFileSync(join(cache, 'active.json'), 'utf8'));
+      check('first-use-cache-integrity-and-handshake', firstUseProgramReceipt.sha256 === sha256(grokExecutable)
+        && firstUseProgramReceipt.mcpHandshakeValidated === true && firstUseProgramReceipt.credentialsValidated === false,
+      { receipt: firstUseProgramReceipt });
+      const current = await settingsCall('snapshot');
+      check('first-use-default-settings-snapshot', current.ok === true && !current.value.config.exists
+        && current.value.config.path === grokConfigPath && current.value.plugin.configSource === 'default');
+      // This is the same authenticated settings API used by the production
+      // dialog. The full Web DOM flow below separately exercises that dialog.
+      const saved = await settingsCall('save', { expectedRevision: current.value.config.revision,
+        updates: { grok_api_key: GROK_TEST_API_KEY, grok_api_url: grokResponsesStub.baseUrl } });
+      check('first-use-shared-key-save', saved.ok === true
+        && saved.value.config.fields.grok_api_key.configured
+        && saved.value.config.fields.grok_api_key.source === 'file'
+        && !JSON.stringify(saved.value).includes(GROK_TEST_API_KEY));
+      check('first-use-no-manual-product-patch', !/grok-search/.test(readFileSync(join(profile, 'cordis.patch.yml'), 'utf8')));
+      evidence.json('first-use-private-program.json', { program: firstProgram,
+        receipt: firstUseProgramReceipt, configCreatedBySettingsSave: true, manualPathsRequired: false,
+        realCredentialsUsed: false, paidUpstream: false });
+    }
 
     const browserSettingsDom = async () => {
       const browserProfile = join(runRoot, 'browser-profile');
@@ -2451,6 +2494,35 @@ async function linuxWorker(options) {
       'Linux grok-search-rs 0.1.26 real MCP search succeeded.'), {
       text: searchTurn.toolResult?.text ?? null,
     });
+    if (firstUse) {
+      const activePath = join(profile, 'grok-search/runtime-cache/active.json'), cacheHash = sha256(activePath);
+      const second = await runTurn('first-use-repeat-search', 'search', 'web_search');
+      check('first-use-sequential-query-reuses-process', second.snapshot.core?.lastDiagnostic?.childPid === grokPid
+        && second.toolResult?.isError !== true && officialStub.requests.length === 0);
+      const off = await rpc('first-use-native-disable', 'pluginManager/setBundleEnabled', {
+        name: 'dsh-grok-search', enabled: false,
+      });
+      check('first-use-disable-hot-applied', off.application === 'applied' && off.error == null);
+      await waitFor(async () => {
+        const state = await probe();
+        return state.runtimeWeb?.searchProviderId === 'deepseek-official' && !state.program ? true : null;
+      }, 15000, 'first-use hot stop and process reap');
+      check('first-use-disable-reaps-owned-program', !pidAlive(grokPid) && officialStub.requests.length === 0);
+      const on = await rpc('first-use-native-reenable', 'pluginManager/setBundleEnabled', {
+        name: 'dsh-grok-search', enabled: true,
+      });
+      check('first-use-reenable-hot-applied', on.application === 'applied' && on.error == null);
+      const reacquired = await waitFor(async () => {
+        const state = await probe();
+        if (state.program?.phase === 'error') throw new Error('First-use cache reuse failed.');
+        return state.program?.phase === 'ready' && state.control?.phase === 'required' ? state : null;
+      }, 30000, 'first-use cache reuse and route reacquisition');
+      check('first-use-cache-reused-without-redownload', reacquired.program.program.path === grokExecutable
+        && sha256(activePath) === cacheHash);
+      const third = await runTurn('first-use-reenabled-search', 'search', 'web_search');
+      check('first-use-reenabled-search-no-official-fallback', third.toolResult?.isError !== true
+        && third.snapshot.runtimeWeb.searchProviderId === 'grok-search' && officialStub.requests.length === 0);
+    }
     grokRequestsAfterTakeover = grokResponsesStub.requests.length;
 
     const fetchTurn = await runTurn('fetch', 'fetch', 'web_fetch');
@@ -3078,7 +3150,7 @@ async function linuxWorker(options) {
         version: GROK_VERSION,
         linuxArchiveSha256: grokArchiveSha256,
         executable: '<RUN_ROOT>/grok/grok-search-rs',
-        config: '<RUN_ROOT>/grok-config/config.toml',
+        config: firstUse ? '<RUN_ROOT>/home/.config/grok-search-rs/config.toml' : '<RUN_ROOT>/grok-config/config.toml',
         realCredentialsPassed: false,
       },
       pnpm: {
@@ -3103,6 +3175,8 @@ async function linuxWorker(options) {
     ],
     steps,
     checks,
+    firstUseAutoDownloadValidated: firstUse && status === 'pass',
+    firstUseProgramReceipt,
     failure: failure ? evidence.safe(failure) : null,
     termination,
     boundaries: [

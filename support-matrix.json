@@ -32,46 +32,46 @@
       "host": "Desktop",
       "desktop": "0.2.1-rc.2",
       "runtime": "0.2.1-rc.2",
-      "verification": "新体验目标门禁：同一 tarball 安装、详情 DOM/安全 RPC/共享配置、热安装/停用/再启用、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 0.1.26 MCP；最终验收见 Release 证据，旧候选不替代当前包"
+      "verification": "新体验自动化门禁通过：同包安装、详情 DOM/安全 RPC/共享配置、热安装/停用/再启用、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 0.1.26 MCP，以及宿主内自动下载/默认配置首用。Windows 使用官方 default_app 与原始 ASAR，不宣称 packaged 启动或人工付费验收通过；最终 runId 见 CHANGELOG/Release"
     },
     {
       "platform": "win32-x64",
       "host": "Desktop",
       "desktop": "0.2.1-rc.3",
       "runtime": "0.2.1-rc.3",
-      "verification": "新体验目标门禁：同一 tarball 安装、详情 DOM/安全 RPC/共享配置、热安装/停用/再启用、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 0.1.26 MCP；最终验收见 Release 证据，旧候选不替代当前包"
+      "verification": "新体验自动化门禁通过：同包安装、详情 DOM/安全 RPC/共享配置、热安装/停用/再启用、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 0.1.26 MCP，以及宿主内自动下载/默认配置首用。Windows 使用官方 default_app 与原始 ASAR，不宣称 packaged 启动或人工付费验收通过；最终 runId 见 CHANGELOG/Release"
     },
     {
       "platform": "darwin-arm64",
       "host": "Desktop",
       "desktop": "0.2.1-rc.2",
       "runtime": "0.2.1-rc.2",
-      "verification": "新体验目标门禁（macOS arm64 runner）：同一 tarball 安装、详情 DOM/安全 RPC/共享配置、热启停、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 程序对合成上游；最终验收见 Release 证据，stub 不证明付费上游"
+      "verification": "新体验自动化门禁通过（macOS 15 arm64 公共 runner）：同包安装、详情 DOM/安全 RPC/共享配置、热启停、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 合成上游，以及宿主内自动下载/默认配置首用；stub 不证明付费上游或人工验收，最终 runId 见 CHANGELOG/Release"
     },
     {
       "platform": "darwin-arm64",
       "host": "Desktop",
       "desktop": "0.2.1-rc.3",
       "runtime": "0.2.1-rc.3",
-      "verification": "新体验目标门禁（macOS arm64 runner）：同一 tarball 安装、详情 DOM/安全 RPC/共享配置、热启停、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 程序对合成上游；最终验收见 Release 证据，stub 不证明付费上游"
+      "verification": "新体验自动化门禁通过（macOS 15 arm64 公共 runner）：同包安装、详情 DOM/安全 RPC/共享配置、热启停、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 合成上游，以及宿主内自动下载/默认配置首用；stub 不证明付费上游或人工验收，最终 runId 见 CHANGELOG/Release"
     },
     {
       "platform": "linux-x64",
       "host": "CLI/Web",
       "runtime": "0.2.1-rc.2",
-      "verification": "新体验目标门禁（WSL Ubuntu 22.04）：同一 tarball 安装/逐文件核对、Web 详情 DOM/安全 RPC/共享配置、搜索/fetch/chat、热启停、canonical 计数、重载无官方回退、仅补充模式、Grok 程序对合成上游与回收"
+      "verification": "新体验自动化门禁通过（WSL Ubuntu 22.04）：同包安装/逐文件核对、Web 详情 DOM/安全 RPC/共享配置、搜索/fetch/chat、热启停、canonical 计数、重载无官方回退、仅补充模式、Grok 合成上游与回收，以及宿主内自动下载/默认配置首用；未验证原生 Linux 全局安装和付费上游"
     },
     {
       "platform": "linux-x64",
       "host": "CLI/Web",
       "runtime": "0.2.1-rc.3",
-      "verification": "新体验目标门禁（WSL Ubuntu 22.04）：同一 tarball 安装/逐文件核对、Web 详情 DOM/安全 RPC/共享配置、搜索/fetch/chat、热启停、canonical 计数、重载无官方回退、仅补充模式、Grok 程序对合成上游与回收"
+      "verification": "新体验自动化门禁通过（WSL Ubuntu 22.04）：同包安装/逐文件核对、Web 详情 DOM/安全 RPC/共享配置、搜索/fetch/chat、热启停、canonical 计数、重载无官方回退、仅补充模式、Grok 合成上游与回收，以及宿主内自动下载/默认配置首用；未验证原生 Linux 全局安装和付费上游"
     },
     {
       "platform": "linux-x64",
       "host": "CLI/Web",
       "runtime": "0.2.1-rc.4",
-      "verification": "新体验目标门禁（WSL Ubuntu 22.04）：同一 tarball 安装/逐文件核对、Web 详情 DOM/安全 RPC/共享配置、搜索/fetch/chat、热启停、canonical 计数、重载无官方回退、仅补充模式、Grok 程序对合成上游与回收"
+      "verification": "新体验自动化门禁通过（WSL Ubuntu 22.04）：同包安装/逐文件核对、Web 详情 DOM/安全 RPC/共享配置、搜索/fetch/chat、热启停、canonical 计数、重载无官方回退、仅补充模式、Grok 合成上游与回收，以及宿主内自动下载/默认配置首用；未验证原生 Linux 全局安装和付费上游"
     }
   ],
   "versionPolicy": "每个入口至少保留最新可用版本和一个前一已验证版本，各入口版本号不要求同步。DSH 发布新版本后，要等插件发布把它加入版本范围的新版本才能使用；已发布的插件版本不会改动，旧版插件仍可按版本号安装。",
@@ -117,7 +117,7 @@
     "任意源码 live HMR（不等于已实现的原生 PluginManager 热启停）",
     "官方联网 fetch 验收与费用预期确认",
     "原生 Linux（非 WSL）上用 npm 全局安装 DSH CLI 的完整用户路径",
-    "本轮最终 tarball 三平台验收、真实 Key/额度及用户人工验收",
+    "真实 Key/额度及用户人工验收；包内文案变更后的同包安装/详情按 sourceHashes 选择性复验",
     "更广泛的用户反馈与稳定版发布"
   ],
   "firstReleaseRule": "发布前提：每个已声明平台与入口的滚动版本矩阵都使用同一 tarball 通过全部相关自动化门禁（复合证据释放链、canonical 派发计数、配置重载无回退、安装/停用/移除、真实设置页停止接管、真实 Grok 0.1.26 MCP 握手、干净安装与复打包哈希核对）；公开发布还需用户人工审核放行",
