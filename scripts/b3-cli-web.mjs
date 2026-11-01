@@ -2603,15 +2603,19 @@ async function linuxWorker(options) {
       const originalPreferences = await settingsCall('preferences');
       check('sources-only-preferences-read', originalPreferences.ok === true);
       const received = [];
+      let invalidFirstSource = false;
       const server = createServer((request, response) => {
         let body = '';
         request.on('data', chunk => { if (body.length < 65536) body += chunk; });
         request.on('end', () => {
-          const valid = request.method === 'POST' && request.url === '/search'
-            && request.headers['x-api-key'] === GROK_TEST_API_KEY;
+          const tavily = request.url === '/tavily/search';
+          const valid = request.method === 'POST' && (tavily
+            ? request.headers.authorization === `Bearer ${GROK_TEST_API_KEY}`
+            : request.url === '/search' && request.headers['x-api-key'] === GROK_TEST_API_KEY);
           received.push({ method: request.method, path: request.url, valid });
           response.writeHead(valid ? 200 : 400, { 'Content-Type': 'application/json' });
-          response.end(JSON.stringify({ results: [{ url: 'https://example.invalid/linux-sources-only',
+          response.end(JSON.stringify({ results: [{ url: invalidFirstSource && !tavily ? 'https://[invalid-source'
+            : tavily ? 'https://example.invalid/linux-source-failover' : 'https://example.invalid/linux-sources-only',
             title: '隔离补充来源', summary: '测试摘要'.repeat(20000) }] }));
         });
       });
@@ -2620,7 +2624,9 @@ async function linuxWorker(options) {
         const cfg = await settingsCall('snapshot');
         const saved = await settingsCall('save', { expectedRevision: cfg.value.config.revision,
           updates: { exa_api_key: GROK_TEST_API_KEY, exa_api_url: `http://127.0.0.1:${server.address().port}`,
-            exa_enabled: true, source_providers: ['exa'], response_max_chars: 5000 } });
+            exa_enabled: true, tavily_api_key: GROK_TEST_API_KEY,
+            tavily_api_url: `http://127.0.0.1:${server.address().port}/tavily`,
+            tavily_enabled: true, source_providers: ['exa', 'tavily'], response_max_chars: 5000 } });
         check('sources-only-shared-save', saved.ok === true);
         const switched = await settingsCall('savePreferences', { expectedRevision: originalPreferences.value.revision,
           value: { ...originalPreferences.value.value, grokEnabled: false } });
@@ -2635,6 +2641,14 @@ async function linuxWorker(options) {
           { maxChars: 5000, serializedChars: JSON.stringify(result).length });
         check('sources-only-no-grok-or-official', grokResponsesStub.requests.length === grokBefore
           && officialStub.requests.length === officialBefore);
+        invalidFirstSource = true;
+        const failoverStart = received.length;
+        const recovered = await probe('product-query-result');
+        check('invalid-source-URL-falls-through-to-next-provider',
+          recovered.sources[0]?.url === 'https://example.invalid/linux-source-failover'
+          && JSON.stringify(received.slice(failoverStart).map(row => row.path)) === '["/search","/tavily/search"]');
+        check('invalid-source-URL-failover-keeps-original-unused',
+          grokResponsesStub.requests.length === grokBefore && officialStub.requests.length === officialBefore);
         const count = received.length;
         writeFileSync(grokConfigPath, 'exa_api_key = invalid-TOML\n');
         const broken = await runTurn('sources-only-broken-config', 'search', 'web_search', true);

@@ -1,80 +1,69 @@
 {
   "schemaVersion": 1,
   "packageVersion": "0.1.0-beta.1",
-  "channel": "首个公开 Beta 候选（批准发布后 npm next/latest 与 GitHub Pre-release 使用同一 tarball）",
+  "channel": "首个公开 Beta：npm 的 next 与 latest 和 GitHub Pre-release 使用同一个安装包",
   "platforms": [
-    {
-      "platform": "win32",
-      "arch": "x64",
-      "host": "Desktop"
-    },
-    {
-      "platform": "darwin",
-      "arch": "arm64",
-      "host": "Desktop"
-    },
-    {
-      "platform": "linux",
-      "arch": "x64",
-      "host": "CLI/Web"
-    }
+    { "platform": "win32", "arch": "x64", "host": "Desktop" },
+    { "platform": "darwin", "arch": "arm64", "host": "Desktop" },
+    { "platform": "linux", "arch": "x64", "host": "CLI/Web" }
   ],
   "bundles": [
     {
       "package": "dsh-grok-search",
       "components": ["grok-search-program", "grok-search-core", "grok-search-control", "grok-search-settings-ui", "grok-search-route-verifier", "grok-search-recovery"],
-      "note": "裸包入口聚合管理上述子组件，PluginManager 只显示一个安装包，不单独发布 recovery"
+      "note": "一个安装包，内部组件统一管理；DSH 插件页只显示 dsh-grok-search 一个插件"
     }
   ],
   "targets": [
     {
       "platform": "win32-x64",
       "host": "Desktop",
-      "desktop": "0.2.1-rc.2",
-      "runtime": "0.2.1-rc.2",
-      "verification": "新体验自动化门禁通过：同包安装、详情 DOM/安全 RPC/共享配置、热安装/停用/再启用、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 0.1.26 MCP，以及宿主内自动下载/默认配置首用。Windows 使用官方 default_app 与原始 ASAR，不宣称 packaged 启动或人工付费验收通过；最终 runId 见 CHANGELOG/Release"
+      "dsh": "0.2.1-rc.2",
+      "verification": "自动化测试通过：安装与移除、设置页与共享配置、插件即时启停、搜索接管与恢复原搜索、配置重载时不回退官方搜索、只用补充来源、首次使用自动下载 grok-search-rs 程序；Grok 主搜索服务为模拟响应"
     },
     {
       "platform": "win32-x64",
       "host": "Desktop",
-      "desktop": "0.2.1-rc.3",
-      "runtime": "0.2.1-rc.3",
-      "verification": "新体验自动化门禁通过：同包安装、详情 DOM/安全 RPC/共享配置、热安装/停用/再启用、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 0.1.26 MCP，以及宿主内自动下载/默认配置首用。Windows 使用官方 default_app 与原始 ASAR，不宣称 packaged 启动或人工付费验收通过；最终 runId 见 CHANGELOG/Release"
+      "dsh": "0.2.1-rc.3",
+      "verification": "自动化测试通过：安装与移除、设置页与共享配置、插件即时启停、搜索接管与恢复原搜索、配置重载时不回退官方搜索、只用补充来源、首次使用自动下载 grok-search-rs 程序；Grok 主搜索服务为模拟响应"
     },
     {
       "platform": "darwin-arm64",
       "host": "Desktop",
-      "desktop": "0.2.1-rc.2",
-      "runtime": "0.2.1-rc.2",
-      "verification": "新体验自动化门禁通过（macOS 15 arm64 公共 runner）：同包安装、详情 DOM/安全 RPC/共享配置、热启停、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 合成上游，以及宿主内自动下载/默认配置首用；stub 不证明付费上游或人工验收，最终 runId 见 CHANGELOG/Release"
+      "dsh": "0.2.1-rc.2",
+      "verification": "自动化测试通过（GitHub 托管的 macOS 15 Apple Silicon）：安装与移除、设置页与共享配置、插件即时启停、搜索接管与恢复原搜索、配置重载时不回退官方搜索、只用补充来源、首次使用自动下载 grok-search-rs 程序；Grok 主搜索服务为模拟响应"
     },
     {
       "platform": "darwin-arm64",
       "host": "Desktop",
-      "desktop": "0.2.1-rc.3",
-      "runtime": "0.2.1-rc.3",
-      "verification": "新体验自动化门禁通过（macOS 15 arm64 公共 runner）：同包安装、详情 DOM/安全 RPC/共享配置、热启停、canonical 计数、重载无官方回退、仅补充模式、M0-04、Grok 合成上游，以及宿主内自动下载/默认配置首用；stub 不证明付费上游或人工验收，最终 runId 见 CHANGELOG/Release"
+      "dsh": "0.2.1-rc.3",
+      "verification": "自动化测试通过（GitHub 托管的 macOS 15 Apple Silicon）：安装与移除、设置页与共享配置、插件即时启停、搜索接管与恢复原搜索、配置重载时不回退官方搜索、只用补充来源、首次使用自动下载 grok-search-rs 程序；Grok 主搜索服务为模拟响应"
     },
     {
       "platform": "linux-x64",
       "host": "CLI/Web",
-      "runtime": "0.2.1-rc.2",
-      "verification": "新体验自动化门禁通过（WSL Ubuntu 22.04）：同包安装/逐文件核对、Web 详情 DOM/安全 RPC/共享配置、搜索/fetch/chat、热启停、canonical 计数、重载无官方回退、仅补充模式、Grok 合成上游与回收，以及宿主内自动下载/默认配置首用；未验证原生 Linux 全局安装和付费上游"
+      "dsh": "0.2.1-rc.2",
+      "verification": "自动化测试通过（WSL Ubuntu 22.04）：安装与逐文件核对、Web 设置页与共享配置、搜索与网页抓取及聊天不受影响、插件即时启停、配置重载时不回退官方搜索、只用补充来源、首次使用自动下载 grok-search-rs 程序；Grok 主搜索服务为模拟响应"
     },
     {
       "platform": "linux-x64",
       "host": "CLI/Web",
-      "runtime": "0.2.1-rc.3",
-      "verification": "新体验自动化门禁通过（WSL Ubuntu 22.04）：同包安装/逐文件核对、Web 详情 DOM/安全 RPC/共享配置、搜索/fetch/chat、热启停、canonical 计数、重载无官方回退、仅补充模式、Grok 合成上游与回收，以及宿主内自动下载/默认配置首用；未验证原生 Linux 全局安装和付费上游"
+      "dsh": "0.2.1-rc.3",
+      "verification": "自动化测试通过（WSL Ubuntu 22.04）：安装与逐文件核对、Web 设置页与共享配置、搜索与网页抓取及聊天不受影响、插件即时启停、配置重载时不回退官方搜索、只用补充来源、首次使用自动下载 grok-search-rs 程序；Grok 主搜索服务为模拟响应"
     },
     {
       "platform": "linux-x64",
       "host": "CLI/Web",
-      "runtime": "0.2.1-rc.4",
-      "verification": "新体验自动化门禁通过（WSL Ubuntu 22.04）：同包安装/逐文件核对、Web 详情 DOM/安全 RPC/共享配置、搜索/fetch/chat、热启停、canonical 计数、重载无官方回退、仅补充模式、Grok 合成上游与回收，以及宿主内自动下载/默认配置首用；未验证原生 Linux 全局安装和付费上游"
+      "dsh": "0.2.1-rc.4",
+      "verification": "自动化测试通过（WSL Ubuntu 22.04）：安装与逐文件核对、Web 设置页与共享配置、搜索与网页抓取及聊天不受影响、插件即时启停、配置重载时不回退官方搜索、只用补充来源、首次使用自动下载 grok-search-rs 程序；Grok 主搜索服务为模拟响应"
     }
   ],
-  "versionPolicy": "每个入口至少保留最新可用版本和一个前一已验证版本，各入口版本号不要求同步。DSH 发布新版本后，要等插件发布把它加入版本范围的新版本才能使用；已发布的插件版本不会改动，旧版插件仍可按版本号安装。",
+  "realKeyVerification": {
+    "win32-x64": "作者用真实 Key 实测 Grok 主搜索返回结果；自动化测试另用真实 Key 完成只用补充来源的搜索（由 Tavily 返回结果）",
+    "darwin-arm64": "尚未做真实付费接口验收",
+    "linux-x64": "尚未做真实付费接口验收"
+  },
+  "versionPolicy": "每个入口至少保留最新可用版本和前一个已验证版本，各入口的版本号不要求同步。DSH 发布新版本后，要等插件发布把它加入版本范围的新版本才能使用；已发布的插件版本不会改动，旧版插件仍可按版本号安装。package.json 中的 engines.dsh 是所有目标版本的并集，不区分系统和入口：能安装不等于已验证，只有 targets 列出的组合属于支持范围。",
   "unsupported": [
     "macOS Intel（darwin-x64）",
     "Windows ARM（win32-arm64）",
@@ -82,62 +71,11 @@
     "Windows 与 macOS 上的 DSH CLI/Web（可能可以安装，但未验证）",
     "DSH 0.2.2-alpha.2（不在 engines.dsh 范围内，安装会被拒绝）"
   ],
-  "evidence": "每次门禁运行的 runId、tarball SHA-256 与结果记录在仓库 CHANGELOG 和 GitHub Release 说明中。",
-  "mcpDependency": {
-    "package": "@modelcontextprotocol/client",
-    "version": "2.4.0",
-    "source": "插件自身依赖；不能用宿主内置副本代替安装验收；固定为同时修复 GHSA-6qxp-vccf-f47h 与 GHSA-6prh-2h8m-c8cw 的上游版本"
-  },
-  "implemented": [
-    "裸包入口聚合插件与原生 grok-search provider",
-    "已有 Grok 自动发现复用；缺失才校验下载平台包到 profile 私有缓存",
-    "受管 Grok MCP 串行复用、身份变化重建、空闲五分钟退出",
-    "主搜/仅补充模式共用 1 active/8 queued 和总截止；共享 response_max_chars 限制结果",
-    "六个供应商详情弹窗与 Hub、官方 logo、唯一宽版、浅深主题、拖放与键盘排序",
-    "共享 TOML revision/CAS 最小编辑、显式 Key 查看/复制、清除确认与历史恢复",
-    "全量来源/全部 Tavily Key 可取消诊断；GitHub 独立认证检查",
-    "Grok 关闭或失败时顺序补充搜索，成功静默回退，全部失败明确报错",
-    "错误明确返回",
-    "进程取消与回收",
-    "版本化控制记录、显式迁移与合法启动校正",
-    "单包恢复入口：路由核验、未完成释放的跨进程补完与失败关闭",
-    "三个支持入口的单包安装/启用/停用/移除/重启清理路径",
-    "显式释放事务核心（barrier、CAS、路由恢复/验证回调）",
-    "产品 owner/recovery 释放 controller；原生停用恢复原搜索，再启用重新接管",
-    "Windows/macOS Desktop 与 Linux CLI/Web 显式停止后的作者路由恢复",
-    "canonical Session 原始官方搜索派发事件计数适配（三个支持入口的真实官方 provider 路径已验证）",
-    "宿主接缝审计（Windows Desktop 与 Linux CLI/Web 单独审计；macOS 由产品 Desktop 门禁核验同一计数与重载接缝）",
-    "M0-04 最小单元：两版多 Session/standard-ptc preset/PTC/fetch-chat/旧 Session 重启（夹具）",
-    "M0-04 60000/90000/120000 预算矩阵与可见工具 timeoutMs（夹具）",
-    "M0-04 双版旧连接/WebSocket 重连、配置重载和 standard/ptc/cordis preset 矩阵（夹具计数）",
-    "Beta 包元数据、MIT 许可证与 GitHub Release 安装包白名单"
-  ],
-  "pending": [
-    "跨资源提交崩溃与完整在途事务",
-    "任意源码 live HMR（不等于已实现的原生 PluginManager 热启停）",
-    "官方联网 fetch 验收与费用预期确认",
-    "原生 Linux（非 WSL）上用 npm 全局安装 DSH CLI 的完整用户路径",
-    "真实 Key/额度及用户人工验收；包内文案变更后的同包安装/详情按 sourceHashes 选择性复验",
-    "更广泛的用户反馈与稳定版发布"
-  ],
-  "firstReleaseRule": "发布前提：每个已声明平台与入口的滚动版本矩阵都使用同一 tarball 通过全部相关自动化门禁（复合证据释放链、canonical 派发计数、配置重载无回退、安装/停用/移除、真实设置页停止接管、真实 Grok 0.1.26 MCP 握手、干净安装与复打包哈希核对）；公开发布还需用户人工审核放行",
-  "releaseScope": "Windows x64 Desktop、macOS Apple Silicon Desktop、Linux x64 CLI/Web；复用已有兼容 Grok/配置，缺失才准备已验证最新程序；用户提供 Key，主动保存修改同一 Grok 共享配置；不升级全局程序，不改宿主/ASAR",
-  "betaKnownLimitations": [
-    "只有 targets 明列的组合属于支持范围；不承诺 macOS Intel、Windows ARM、官方 Linux Desktop、Windows/macOS 上的 CLI/Web 或 DSH 0.2.2-alpha.2",
-    "engines.dsh 是所有目标版本的并集，不编码 OS/入口差异；只有 targets 明列且完成验收的组合属于支持范围，不能据 npm 版本接受推断其他组合已验证",
-    "DSH 升级到 engines.dsh 范围以外时，宿主启动会跳过本插件，搜索按原设置回到 DSH 自带搜索，界面可能没有提示；不建议用 dsh plugin allow-version 强制放行",
-    "宿主无 release 专属事件；释放与校正按复合证据判定（意图提交 + 路由恢复验证 + 相对计数窗口为零 + 完成回执），不冒充宿主专属回执",
-    "HMR 开启时热安装/停用/再启用；无 HMR 如实返回 restart-required，不改宿主或自动重启",
-    "整包停用卸载设置页和网关，再启用恢复；没有独立停止按钮或删记录重启要求",
-    "上游 latest 未经本插件验证会拒绝自动安装；不覆盖或升级已有全局 Grok",
-    "共享配置保存影响同文件的其他客户端；环境优先且只读，OAuth 不提供独立登录 UI",
-    "config-history 可能含明文 Key，Windows mode 不等于加密或独立 ACL；删除 Key 不擦除历史",
-    "Hub 插件预算/程序路径/配置路径只读；路径入口作用于宿主，打不开时可复制",
-    "普通 MCP 无逐来源/Key 遥测，未知内部回退不点亮任意来源；逐 Key 诊断整体返回",
-    "补充来源数/回退来源数是结果条数；GitHub 不计搜索源；测试全量、普通回退首个有效来源收敛",
-    "测试与原生上游预取可能消耗多个来源额度；取消不保证撤回计费；保存成功不等于 Key 有效",
-    "共享配置及偏好是协作式文件 CAS，不提供跨资源原子性、网络文件系统或断电目录耐久",
-    "任意源码 live HMR、跨资源提交崩溃、完整在途事务与官方联网 fetch 未覆盖",
-    "卸载不自动清理控制记录、私有程序、偏好或配置历史"
+  "notTested": [
+    "原生 Linux（非 WSL）上用 npm 全局安装 DSH CLI 的完整路径",
+    "macOS 和 Linux 上的真实付费接口",
+    "开发时的任意源码热替换",
+    "多文件写入中途崩溃，以及所有并发请求组合",
+    "DSH 官方联网网页抓取及其费用预期"
   ]
 }

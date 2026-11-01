@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 export const name = 'candidate-offline-fixture';
 const trace = () => globalThis.__DSH_INTERNAL_CANDIDATE__;
+// Manual acceptance only (never set by gates): the latest question becomes the
+// search query and the reply states plainly that this is not a DeepSeek model.
+const MANUAL_SEARCH_REPLY = '（离线验收模型，不是 DeepSeek）本轮已完成，请查看上方 web_search 工具卡片里的搜索来源。';
+const MANUAL_CHAT_REPLY = '（离线验收模型，不是 DeepSeek）普通聊天正常。';
 
 export function applyModel(ctx) {
   const state = trace();
@@ -13,12 +17,16 @@ export function applyModel(ctx) {
       const userTexts = options.messages.filter(message => message.role === 'user')
         .flatMap(message => message.content.filter(part => part.type === 'text').map(part => part.text.trim()))
         .filter(text => text && !text.startsWith('Current runtime context') && !text.startsWith('Generate the session title'));
-      const command = userTexts.findLast(text => /^(?:search|fetch|echo|chat|ptc)(?:\s|$)/.test(text)) ?? userTexts.at(-1) ?? '';
+      const manual = process.env.DSH_MANUAL_ACCEPTANCE === '1';
+      const command = manual ? userTexts.at(-1) ?? ''
+        : userTexts.findLast(text => /^(?:search|fetch|echo|chat|ptc)(?:\s|$)/.test(text)) ?? userTexts.at(-1) ?? '';
       (state.modelCommands ??= []).push(command);
       const mode = command.split(/\s+/)[0];
+      const question = manual && command && !/^(?:search|fetch|echo|chat|ptc)$/.test(mode) ? command.slice(0, 200) : null;
       if (messages.length || mode === 'chat') {
         state.toolMessages.push(...structuredClone(messages)); state.completed++;
-        yield { type: 'text-delta', index: 0, text: '内部候选轮次完成' };
+        yield { type: 'text-delta', index: 0,
+          text: manual ? (messages.length ? MANUAL_SEARCH_REPLY : MANUAL_CHAT_REPLY) : '内部候选轮次完成' };
         yield { type: 'finish', reason: { kind: 'stop' } }; return;
       }
       const ptcTransport = process.env.DSH_TOOLS_MODE === 'ptc';
@@ -32,7 +40,7 @@ export function applyModel(ctx) {
         } }
           : mode === 'fetch' ? { name: 'web_fetch', args: { url: 'https://example.invalid/fetch' } }
             : mode === 'echo' ? { name: 'candidate_echo', args: {} }
-              : { name: 'web_search', args: { queries: ['内部候选离线查询'] } };
+              : { name: 'web_search', args: { queries: [state.searchQuery ?? question ?? '内部候选离线查询'] } };
       yield { type: 'tool-call-delta', index: 0, id: randomUUID(), name: tool.name, argumentsDelta: JSON.stringify(tool.args) };
       yield { type: 'finish', reason: { kind: 'tool-calls' } };
     }

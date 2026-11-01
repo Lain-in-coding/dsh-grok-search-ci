@@ -6,16 +6,24 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { candidateRuntime } from './lib/candidate-runtime.mjs';
 import { packInternal } from './pack-internal.mjs';
-import { project, freshRun, writeJson, commandResult, receipt, npmCli, sha256, cleanEnvironment, redact } from './lib/internal-candidate-utils.mjs';
+import { project, freshRun, writeJson, commandResult, receipt, npmCli, sha256, cleanEnvironment, configSecrets, redact } from './lib/internal-candidate-utils.mjs';
 
 let oldDesktop, newDesktop, realGrokExecutable, realGrokConfig, existingTarball;
+let diagnoseProviders = [], upstreamMode = 'unspecified';
 for (let index = 2; index < process.argv.length; index++) {
   if (process.argv[index] === '--desktop-rc2') oldDesktop = process.argv[++index];
   else if (process.argv[index] === '--desktop-rc21') newDesktop = process.argv[++index];
   else if (process.argv[index] === '--real-grok-executable') realGrokExecutable = process.argv[++index];
   else if (process.argv[index] === '--real-grok-config') realGrokConfig = process.argv[++index];
   else if (process.argv[index] === '--package') existingTarball = process.argv[++index];
+  else if (process.argv[index] === '--diagnose-providers') diagnoseProviders = process.argv[++index].split(',').filter(Boolean);
+  else if (process.argv[index] === '--upstream-mode') upstreamMode = process.argv[++index];
   else throw new Error('未知内部候选参数：' + process.argv[index]);
+}
+if (!['unspecified', 'loopback', 'paid'].includes(upstreamMode)) throw new Error('Unknown acceptance upstream mode.');
+if (new Set(diagnoseProviders).size !== diagnoseProviders.length
+  || diagnoseProviders.some(provider => !['tavily', 'exa', 'tinyfish', 'firecrawl', 'github'].includes(provider))) {
+  throw new Error('Unknown or repeated acceptance diagnosis provider.');
 }
 if (!oldDesktop || !newDesktop) throw new Error('请同时提供 --desktop-rc2 和 --desktop-rc21。');
 const runtimes = [candidateRuntime(oldDesktop), candidateRuntime(newDesktop)];
@@ -23,12 +31,13 @@ const targetVersions = (process.env.DSH_B2_TARGET_VERSIONS ?? '0.2.1-rc.2,0.2.1-
 assert.deepEqual(runtimes.map(runtime => runtime.app.version), targetVersions);
 const realOnly = Boolean(realGrokExecutable || realGrokConfig || existingTarball);
 if (realOnly && (!realGrokExecutable || !realGrokConfig || !existingTarball)) throw new Error('真实冒烟须同时给出 --package、--real-grok-executable、--real-grok-config。');
+if (!realOnly && (diagnoseProviders.length || upstreamMode !== 'unspecified')) throw new Error('Provider diagnosis requires an explicit package, program and isolated configuration.');
 const realConfigHashBefore = realOnly ? sha256(realGrokConfig) : null;
 const realExecutableHashBefore = realOnly ? sha256(realGrokExecutable) : null;
 const { directory, runId } = freshRun(realOnly ? 'internal-candidate-real' : 'internal-candidate');
 const sandbox = mkdtempSync(join(tmpdir(), 'dsh-internal-candidate-'));
 const replacements = [...(realOnly ? [[realGrokExecutable, '<GROK_EXECUTABLE>'], [realGrokConfig, '<GROK_CONFIG>']] : []), [sandbox, '<SANDBOX>'], ...runtimes.map(runtime => [dirname(runtime.executable), `<DESKTOP_${runtime.app.version}>`])];
-const secrets = new Set();
+const secrets = new Set(realOnly ? configSecrets(realGrokConfig) : []);
 const sanitize = value => redact(value, replacements, [...secrets]);
 const safeValue = value => JSON.parse(sanitize(JSON.stringify(value)));
 const results = [], executions = [], hosts = [];
@@ -101,7 +110,9 @@ function startHost(runtime, root, env) {
       if (!state.stopped) await state.closed;
     },
   };
-  child.send({ fixtureNode: process.execPath, ...(realOnly ? { realGrok: { executable: realGrokExecutable, configPath: realGrokConfig } } : {}) }); hosts.push(host); return host;
+  child.send({ fixtureNode: process.execPath, ...(realOnly ? { realGrok: {
+    executable: realGrokExecutable, configPath: realGrokConfig, query: 'DeepSeek Harness official plugin documentation',
+  } } : {}) }); hosts.push(host); return host;
 }
 async function rpc(host, cookie, endpoint, request) {
   const origin = (await host.event('listening')).origin;
@@ -213,7 +224,7 @@ async function verifyHost(runtime, root, env) {
 
 async function verifyRealHost(runtime, root, env) {
   const host = startHost(runtime, root, env);
-  let managedPid = null;
+  let managedPid = null, auth = null;
   await caseResult('real-grok-native-tool-query', runtime.app.version, async record => {
     const ready = await host.event('ready');
     assert.deepEqual(ready.failed, []); assert.deepEqual(ready.pending, []);
@@ -225,16 +236,17 @@ async function verifyRealHost(runtime, root, env) {
       program = (await host.request('snapshot')).productProgram;
     }
     assert.equal(program?.phase, 'ready', 'Isolated Grok must be ready before the native tool query.');
-    const auth = await session(host);
+    auth = await session(host);
     const model = await turn(host, auth, 'search', 'real-grok-query');
     // 不留真实回答正文，只保存可核查的路由、来源 URL 与进程事实。
     const urls = [...new Set([...model.model.text.matchAll(/https?:\/\/[^\s<>()]+/g)].map(match => match[0]))];
     record.observations.push({ stage: 'real-tool-result', model: { isError: model.model.isError, completed: model.model.completed,
-      textChars: model.model.text.length, sourceUrls: urls, ...(model.model.isError ? { errorText: model.model.text } : {}) },
+      textChars: model.model.text.length, sourceUrls: urls },
       calls: model.calls, core: model.core, sdk: model.sdk, runtimeWeb: model.runtimeWeb });
     assert.equal(model.model.isError, false); assert.ok(urls.length > 0);
     assert.equal(model.calls.original, 0); assert.equal(model.sdk.version, '2.4.0'); assert.equal(model.sdk.suppliedByPlugin, true);
     assert.equal(model.core.lastDiagnostic.serverVersion, '0.1.26');
+    assert.equal(model.core.lastDiagnostic.fallbackUsed, false, 'Supplementary-source fallback cannot validate the Grok primary key/model.');
     assert.equal(model.core.lastDiagnostic.exited, false, 'A successful query keeps the managed MCP session.');
     assert.equal(model.core.session?.connected, true);
     assert.equal(model.core.session?.active, false);
@@ -247,6 +259,23 @@ async function verifyRealHost(runtime, root, env) {
     record.observations.push({ stage: 'fetch-control', model: { completed: fetchTurn.model.completed, isError: fetchTurn.model.isError }, runtimeWeb: fetchTurn.runtimeWeb });
     assert.equal(fetchTurn.model.isError, false); assert.equal(fetchTurn.runtimeWeb.fetchProviderId, 'candidate-fetch');
   });
+  // One request per configured key, once across the two Host versions. This
+  // calls the installed production settings gateway, not a parallel adapter.
+  if (runtime === runtimes[0]) for (const provider of diagnoseProviders) {
+    await caseResult('real-provider-diagnosis-' + provider, runtime.app.version, async record => {
+      auth ??= await session(host);
+      const outcome = await rpc(host, auth.cookie, 'grokSearchSettings/diagnoseProvider', { provider });
+      record.observations.push({ stage: 'production-settings-diagnosis', result: outcome });
+      assert.equal(outcome.provider, provider);
+      assert.equal(outcome.status, 'ok', `${provider} diagnosis did not return usable results.`);
+      if (provider === 'github') assert.equal(outcome.authenticated, true);
+      else {
+        assert.ok(outcome.keys.length > 0);
+        for (const key of outcome.keys) assert.equal(key.status, 'ok', `Key ${key.keyIndex + 1} is not usable.`);
+      }
+    });
+  }
+  managedPid ??= (await host.request('snapshot')).core?.lastDiagnostic?.childPid ?? null;
   await host.close();
   await caseResult('real-grok-reaped-after-host-close', runtime.app.version, async record => {
     assert.equal(host.state.exitCode, 0); assert.equal(host.state.timedOut, false);
@@ -303,7 +332,15 @@ try {
   for (const host of hosts) {
     if (!host.state.stopped) await host.close();
     const { pending, closed, ...state } = host.state;
-    if (realOnly) state.requests = state.requests.map(request => ({ endpoint: request.endpoint, status: request.status, authorization: request.authorization }));
+    if (realOnly) {
+      state.requests = state.requests.map(request => ({ endpoint: request.endpoint, status: request.status, authorization: request.authorization }));
+      // No paid answer bodies, parser inputs or provider stderr in artifacts.
+      state.events = state.events.map(event => event.type === 'fatal'
+        ? { type: 'fatal', error: event.error }
+        : { type: event.type, ...(event.value?.core ? { core: event.value.core } : {}) });
+      state.stdout = { capturedChars: state.stdout.length, persisted: false };
+      state.stderr = { capturedChars: state.stderr.length, persisted: false };
+    }
     writeJson(join(directory, 'host-' + host.version + '.json'), safeValue(state));
   }
   if (realOnly && (sha256(realGrokConfig) !== realConfigHashBefore || sha256(realGrokExecutable) !== realExecutableHashBefore)) results.push({ case: 'shared-grok-unchanged', status: 'fail', observations: [] });
@@ -319,10 +356,22 @@ try {
       schemastery: runtime.archive.json('dsh/node_modules/@deepseek-ai/schemastery/package.json').version,
       bundledSdk: runtime.archive.json('dsh/node_modules/@modelcontextprotocol/client/package.json').version })),
     counts, exitCode, results, protectedUnchanged, protectedBefore, protectedAfter,
+    upstreamMode, diagnosisProviders: diagnoseProviders,
+    harnessSourceHashes: ['scripts/internal-candidate.mjs', 'scripts/internal-candidate-host.mjs',
+      'scripts/lib/internal-candidate-utils.mjs', 'fixtures/internal-candidate/host-fixture.mjs']
+      .map(file => ({ file, sha256: sha256(join(project, file)) })),
+    realPaidPrimaryValidated: upstreamMode === 'paid'
+      && results.filter(result => result.case === 'real-grok-native-tool-query').length === runtimes.length
+      && results.filter(result => result.case === 'real-grok-native-tool-query').every(result => result.status === 'pass'),
+    realPaidProviderDiagnosticsValidated: upstreamMode === 'paid' && diagnoseProviders.length > 0
+      && diagnoseProviders.every(provider => results.some(result =>
+        result.case === 'real-provider-diagnosis-' + provider && result.status === 'pass')),
     ...(realOnly ? { sharedGrokUnchanged: sha256(realGrokConfig) === realConfigHashBefore && sha256(realGrokExecutable) === realExecutableHashBefore, realGrokVersion: '0.1.26' } : {}),
     boundaries: [realOnly ? '同一压缩包；真实官方 Desktop/Host/HTTP Session；离线模型；真实已有 Grok 0.1.26 与共享配置' : '同一压缩包；真实官方 Desktop/Host/HTTP Session；离线模型与外部 MCP 夹具', 'npm 隔离安装不是桌面 PluginManager 安装 UI 验收',
       'fetch 是无网络 stub', '精确错误码来自 direct seam；模型只核验 isError 与文字',
-      '临时作者 selector 只用于查询验证；自动接管／释放／退出提示和旧记录恢复未验收', realOnly ? '每版仅一次真实查询；未改共享配置、全局程序或正式 profile；未提交、推送或发布' : '未执行真实收费查询、正式 profile 改动、提交、推送或发布'] };
+      '临时作者 selector 只用于查询验证；自动接管／释放／退出提示和旧记录恢复未验收',
+      realOnly ? '每版仅一次原生搜索；可选逐来源诊断仅第一版执行；上游原生预取/内部回退不能当主后端健康，未改共享配置、全局程序或正式 profile' : '未执行真实收费查询、正式 profile 改动、提交、推送或发布',
+      '真实上游结果正文与原始 stdout/stderr 不持久化；配置凭据和编码形式先脱敏'] };
   writeJson(join(directory, 'summary.json'), safeValue(summary));
   writeJson(join(directory, 'execution.json'), { runId, command: process.execPath, args: process.argv.slice(1).map(sanitize), cwd: '<PROJECT>',
     envPolicy: '临时 DSH_HOME 与用户目录；只继承系统和代理变量；npm 使用空白用户/全局配置', executions, exitCode });

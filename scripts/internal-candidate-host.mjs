@@ -15,7 +15,8 @@ const profile = join(process.env.DSH_HOME, 'profiles', 'candidate');
 const fixturePackage = join(profile, 'node_modules', 'candidate-offline-fixture');
 const controlPath = join(directory, 'mcp-control.json');
 const eventPath = join(directory, 'mcp-events.jsonl');
-const trace = { instanceId: randomUUID(), calls: { original: 0, fetch: 0, echo: 0 }, modelCalls: 0, completed: 0,
+const trace = { instanceId: randomUUID(), searchQuery: config.realGrok?.query ?? null,
+  calls: { original: 0, fetch: 0, echo: 0 }, modelCalls: 0, completed: 0,
   existingDisposed: 0, sessionEvents: [], toolMessages: [], cancellations: [] };
 globalThis.__DSH_INTERNAL_CANDIDATE__ = trace;
 let boot, cancelController, cancelReason, cancelTask;

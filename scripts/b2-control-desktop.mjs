@@ -448,16 +448,20 @@ try{
     });
     await scenario(runtime, 'sources-only-shared-budget-and-native-stop', async folder => {
       const requests = [];
+      let invalidFirstSource = false;
       const server = createServer((request, response) => {
         let body = '';
         request.on('data', chunk => { if (body.length < 65536) body += chunk; });
         request.on('end', () => {
-          const valid = request.method === 'POST' && request.url === '/search'
-            && request.headers['x-api-key'] === 'exa-offline-synthetic-key';
+          const tavily = request.url === '/tavily/search';
+          const valid = request.method === 'POST' && (tavily
+            ? request.headers.authorization === 'Bearer tavily-offline-synthetic-key'
+            : request.url === '/search' && request.headers['x-api-key'] === 'exa-offline-synthetic-key');
           requests.push({ valid, method: request.method, path: request.url, bodyLength: body.length });
           response.writeHead(valid ? 200 : 400, { 'content-type': 'application/json' });
           response.end(valid ? JSON.stringify({ results: [{
-            url: 'https://example.invalid/source-budget', title: '隔离补充来源',
+            url: invalidFirstSource && !tavily ? 'https://[invalid-source'
+              : tavily ? 'https://example.invalid/source-failover' : 'https://example.invalid/source-budget', title: '隔离补充来源',
             summary: '来源内容'.repeat(20000),
           }] }) : '{}');
         });
@@ -475,10 +479,13 @@ try{
         }) + '\n', { flag: 'wx' });
         const configPath = join(folder, 'isolated-grok.toml');
         writeFileSync(configPath, [
-          'source_providers = ["exa"]',
+          'source_providers = ["exa", "tavily"]',
           'exa_enabled = true',
           `exa_api_url = "http://127.0.0.1:${server.address().port}"`,
           'exa_api_key = "exa-offline-synthetic-key"',
+          `tavily_api_url = "http://127.0.0.1:${server.address().port}/tavily"`,
+          'tavily_api_key = "tavily-offline-synthetic-key"',
+          'tavily_enabled = true',
           'response_max_chars = 5000',
           '',
         ].join('\n'), { flag: 'wx', mode: 0o600 });
@@ -498,6 +505,12 @@ try{
         assert.equal(output.truncated, true);
         assert.equal(output.content, '');
         assert.ok(requests.length > 0 && requests.every(row => row.valid));
+        invalidFirstSource = true;
+        const failoverStart = requests.length;
+        const recovered = await host.probe('product-query-result');
+        assert.equal(recovered.sources[0]?.url, 'https://example.invalid/source-failover');
+        assert.deepEqual(requests.slice(failoverStart).map(row => row.path), ['/search', '/tavily/search']);
+        assert.equal((await host.probe('snapshot')).calls.original, 0);
         // Corrupting a live shared config is not an explicit release. The next
         // search must fail and must not reach either fallback HTTP or official.
         const requestsBeforeCorruption = requests.length;
@@ -519,7 +532,8 @@ try{
         assert.equal(exit.exitCode, 0); assert.equal(exit.forced, false);
         return { fallback, broken, disabled, restored, original, fetch, chat, requests, exit,
           sharedResultBudget: 5000, serializedToolResultChars: encoded.length,
-          sourceOnlyValidated: true, corruptConfigFailClosed: true, realUpstreamValidated: false };
+          sourceOnlyValidated: true, invalidSourceUrlFailoverValidated: true,
+          corruptConfigFailClosed: true, realUpstreamValidated: false };
       } finally { await new Promise(resolve => server.close(resolve)); }
     });
     await scenario(runtime, 'aggregated-canonical-counter-and-reload-transition', async folder => {

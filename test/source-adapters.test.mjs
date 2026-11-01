@@ -88,6 +88,50 @@ test('only tavily splits comma separated keys', async () => {
   assert.deepEqual(result.sources, [{ url: 'https://exa.example', snippet: 's', publishedAt: '2026-01-01' }]);
 });
 
+test('unusable result URLs do not count as success or prevent the next source', async () => {
+  const invalid = [
+    'https://[invalid-url',
+    'https://synthetic-user:synthetic-pass@example.invalid/private',
+    { url: 'https://[invalid-object', title: 'Malformed URL' },
+    { url: 'https://synthetic-user@example.invalid/private', title: 'Credential URL' },
+  ];
+  const { instance, calls } = router({ fetchImpl: async url => json({
+    results: url.includes('tavily') ? invalid : [{ url: 'https://example.com/valid', title: 'Valid' }],
+  }) });
+  const diagnosis = await instance.diagnoseProvider('tavily');
+  assert.equal(diagnosis.status, 'empty');
+  assert.equal(diagnosis.code, 'EMPTY');
+  assert.equal(diagnosis.keys[0].results, undefined);
+  calls.length = 0;
+  const result = await instance.search({ query: 'offline URL validation' });
+  assert.deepEqual(calls.map(call => new URL(call.url).hostname), ['tavily.test', 'exa.test']);
+  assert.equal(result.search_provider, 'exa');
+  assert.equal(result.sources[0].url, 'https://example.com/valid');
+  assert.equal(result.diagnostic.failures[0].code, 'EMPTY');
+  assert.ok(!JSON.stringify(result).includes('synthetic-pass'));
+});
+
+test('each source filters unsafe URLs before applying the result limit', async () => {
+  for (const provider of ['tavily', 'exa', 'tinyfish', 'firecrawl']) {
+    const config = without({ ...baseConfig(), tinyfish_api_key: 'tf-key' },
+      ...['tavily', 'exa', 'tinyfish', 'firecrawl'].filter(id => id !== provider));
+    const rows = [{ url: 'https://[invalid' }, { url: 'https://user:pass@example.invalid' },
+      { url: 'https://example.com/valid', title: 'Valid' }];
+    const { instance } = router({ config, fetchImpl: async () =>
+      json(provider === 'firecrawl' ? { data: { web: rows } } : { results: rows }) });
+    const result = await instance.search({ query: 'offline URL validation', maxResults: 1 });
+    assert.equal(result.search_provider, provider);
+    assert.deepEqual(result.sources, [{ url: 'https://example.com/valid', title: 'Valid' }]);
+  }
+});
+
+test('invalid URLs from every source fail explicitly instead of returning empty success', async () => {
+  const { instance } = router({ fetchImpl: async () => json({ results: ['https://[invalid'] }) });
+  await assert.rejects(instance.search({ query: 'offline URL validation' }), error =>
+    error.code === 'SOURCE_ALL_FAILED' && error.details.failures.length === 3
+    && error.details.failures.every(row => row.code === 'EMPTY'));
+});
+
 test('diagnosis covers every key, skips disabled sources and separates empty from failure', async () => {
   const config = without({ ...baseConfig(), tavily_api_key: 'good,bad' }, 'firecrawl');
   const { instance, calls } = router({ config,

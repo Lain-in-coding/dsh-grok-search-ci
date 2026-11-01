@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir, homedir } from 'node:os';
 import { createHash } from 'node:crypto';
+import { parse } from 'smol-toml';
 
 export const project = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -34,9 +35,44 @@ export function cleanEnvironment(root, extra = {}) {
   for (const path of [root, env.HOME, env.APPDATA, env.LOCALAPPDATA].filter(Boolean)) mkdirSync(path, { recursive: true });
   return env;
 }
+// Only read the explicitly authorized file. TOML parser errors can contain
+// source lines, so none of those errors may escape into an evidence log.
+export function configSecrets(path) {
+  let document;
+  try {
+    const bytes = readFileSync(path);
+    if (bytes.length > 1_048_576) throw new Error('Too large');
+    document = parse(bytes.toString('utf8').replace(/^\uFEFF/, ''));
+  } catch {
+    throw new Error('Cannot safely parse the explicitly supplied acceptance configuration.');
+  }
+  const values = new Set();
+  const visit = (value, sensitive = false) => {
+    if (typeof value === 'string' && sensitive) {
+      if (value.trim()) values.add(value);
+      for (const part of value.split(',').map(item => item.trim()).filter(Boolean)) values.add(part);
+    } else if (Array.isArray(value)) {
+      for (const item of value) visit(item, sensitive);
+    } else if (value && typeof value === 'object') {
+      for (const [key, item] of Object.entries(value)) {
+        visit(item, sensitive || /(?:^|_)(?:api_?keys?|keys?|tokens?|secrets?|passwords?)(?:$|_)/i.test(key));
+      }
+    }
+  };
+  visit(document);
+  return [...values].sort((a, b) => b.length - a.length);
+}
 export function redact(value, replacements = [], secrets = []) {
   let text = String(value);
-  for (const secret of secrets) if (secret) text = text.split(secret).join('<AUTH_REDACTED>');
+  const spellings = new Set();
+  for (const secret of secrets) if (secret) {
+    spellings.add(secret);
+    spellings.add(encodeURIComponent(secret));
+    spellings.add(JSON.stringify(secret).slice(1, -1));
+  }
+  for (const secret of [...spellings].sort((a, b) => b.length - a.length)) {
+    text = text.split(secret).join('<AUTH_REDACTED>');
+  }
   for (const [path, label] of [...replacements, [project, '<PROJECT>'], [dirname(process.execPath), '<NODE_INSTALL>'], [homedir(), '<USER_HOME>'], [tmpdir(), '<TEMP>']]) {
     for (const spelling of [path, path.replaceAll('\\', '/'), path.replaceAll('\\', '\\\\'), new URL('file:///' + path.replaceAll('\\', '/')).href]) {
       text = text.split(spelling).join(label);

@@ -8,13 +8,16 @@ import { randomUUID } from 'node:crypto';
 import { candidateRuntime } from './lib/candidate-runtime.mjs';
 import { connectRenderer, waitForRenderer } from './lib/renderer-cdp.mjs';
 import {
-  cleanEnvironment, commandResult, freshRun, project, receipt, redact, sha256, writeJson,
+  cleanEnvironment, commandResult, configSecrets, freshRun, project, receipt, redact, sha256, writeJson,
 } from './lib/internal-candidate-utils.mjs';
+import { createSharedConfigStore } from '../src/core/shared-config.mjs';
+import { createPrivatePreferences } from '../src/core/private-preferences.mjs';
 
 const PRODUCT_BUNDLE = 'dsh-grok-search';
 const options = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
-  if (!['--desktop-rc2', '--desktop-rc21', '--product-package', '--first-use', '--diagnostics'].includes(process.argv[index])
+  if (!['--desktop-rc2', '--desktop-rc21', '--product-package', '--first-use', '--diagnostics',
+    '--source-only-config', '--manual-acceptance'].includes(process.argv[index])
     || !process.argv[index + 1]) throw new Error('Expected named Desktop and package arguments.');
   options.set(process.argv[index], process.argv[index + 1]);
 }
@@ -31,14 +34,33 @@ const diagnostics = options.get('--diagnostics') === 'loopback';
 if (options.has('--diagnostics') && (!diagnostics || !firstUse)) {
   throw new Error('--diagnostics loopback requires --first-use download.');
 }
+const sourceOnlyConfig = options.has('--source-only-config') ? resolve(options.get('--source-only-config')) : null;
+const manualAcceptance = options.get('--manual-acceptance') === 'true';
+if (options.has('--manual-acceptance') && !manualAcceptance) throw new Error('Expected --manual-acceptance true.');
+if (sourceOnlyConfig && (firstUse || diagnostics)) throw new Error('Source-only acceptance cannot use synthetic first-use/diagnosis mode.');
+if (manualAcceptance && (!sourceOnlyConfig || runtimes.length !== 1)) {
+  throw new Error('Manual acceptance requires a source-only config and one explicit DSH_B2_ONLY_VERSION.');
+}
+if (sourceOnlyConfig) {
+  const fields = createSharedConfigStore({ path: sourceOnlyConfig, env: () => ({}) }).readEffective();
+  if (fields.grok_api_key.value || fields.openai_compatible_api_key.value || fields.grok_auth_mode.value !== 'api_key') {
+    throw new Error('Source-only acceptance must not contain Grok credentials or OAuth.');
+  }
+}
+const sourceConfigBefore = sourceOnlyConfig ? sha256(sourceOnlyConfig) : null;
 
-const { runId, directory } = freshRun(diagnostics ? 'diagnostics-desktop'
+const { runId, directory } = freshRun(manualAcceptance ? 'manual-plugin-acceptance'
+  : sourceOnlyConfig ? 'source-only-desktop' : diagnostics ? 'diagnostics-desktop'
   : firstUse ? 'first-use-desktop' : 'b2-plugin-manager-desktop');
 const temporary = join(tmpdir(), 'dsh-deferred-desktop-manager-' + runId);
 const replacements = [[temporary, '<TEMPORARY_RUN>'], [dirname(productTarball), '<PRODUCT_PACKAGE>'],
   [dirname(process.execPath), '<NODE_INSTALL>'],
   ...runtimes.map(runtime => [dirname(runtime.executable), `<DESKTOP_${runtime.app.version}>`])];
 const secrets = new Set();
+if (sourceOnlyConfig) {
+  replacements.push([sourceOnlyConfig, '<ISOLATED_SOURCE_CONFIG>']);
+  for (const secret of configSecrets(sourceOnlyConfig)) secrets.add(secret);
+}
 const sanitize = value => redact(String(value), replacements, [...secrets]);
 const safe = value => JSON.parse(sanitize(JSON.stringify(value)));
 const sleep = milliseconds => new Promise(done => setTimeout(done, milliseconds));
@@ -46,7 +68,8 @@ const runtimeFiles = folder => readdirSync(join(project, folder), { withFileType
   row.isDirectory() ? runtimeFiles(folder + '/' + row.name) : [folder + '/' + row.name]);
 const sourceHashesBefore = [...new Set([...runtimeFiles('src'), 'package.json', 'cordis.patch.yml',
   'fixtures/deferred-release/desktop-fixture.mjs', 'fixtures/internal-candidate/host-fixture.mjs',
-  'scripts/deferred-release-desktop-prepare.mjs', 'scripts/lib/renderer-cdp.mjs', 'scripts/b2-plugin-manager-desktop.mjs'])]
+  'scripts/deferred-release-desktop-prepare.mjs', 'scripts/lib/renderer-cdp.mjs',
+  'scripts/lib/internal-candidate-utils.mjs', 'scripts/b2-plugin-manager-desktop.mjs'])]
   .map(file => ({ file, sha256: sha256(join(project, file)) }));
 const expectedProductReceipt = packageReceipt(productTarball);
 for (const row of expectedProductReceipt.sourceHashes) {
@@ -488,6 +511,8 @@ async function start(runtime, folder, phase) {
     PNPM_HOME: join(temporary, 'pnpm-home'),
     PNPM_STORE_DIR: join(temporary, 'pnpm-store'),
     npm_config_update_notifier: 'false',
+    ...(sourceOnlyConfig ? { GROK_SEARCH_CONFIG: sourceOnlyConfig } : {}),
+    ...(manualAcceptance ? { DSH_MANUAL_ACCEPTANCE: '1' } : {}),
     ...(firstUse ? { PATH: process.platform === 'win32'
       ? join(process.env.SystemRoot ?? 'C:/Windows', 'System32')
       : '/usr/bin:/bin:/usr/sbin:/sbin' } : {}),
@@ -497,7 +522,9 @@ async function start(runtime, folder, phase) {
   const prefix = runtime.app.version + '-' + phase + '-' + serial;
   const stdoutPath = join(directory, prefix + '-stdout.log');
   const stderrPath = join(directory, prefix + '-stderr.log');
-  const stdout = openSync(stdoutPath, 'wx'), stderr = openSync(stderrPath, 'wx');
+  const stdout = sourceOnlyConfig ? null : openSync(stdoutPath, 'wx');
+  const stderr = sourceOnlyConfig ? null : openSync(stderrPath, 'wx');
+  const captured = { stdout: '', stderr: '' };
   writeJson(join(directory, prefix + '-command.json'), safe({
     executable, args, cwd: folder,
     environment: Object.fromEntries(Object.entries(env).filter(([name]) => name.startsWith('DSH_') || name.startsWith('PNPM_') || name === 'NODE_OPTIONS')),
@@ -505,19 +532,43 @@ async function start(runtime, folder, phase) {
     startupMode: process.platform === 'win32' ? 'official-default-app-with-original-asar' : 'packaged-app',
     startedAt: new Date().toISOString(),
   }));
-  const child = spawn(executable, args, { cwd: folder, env, windowsHide: true, shell: false,
-    stdio: ['ignore', stdout, stderr] });
-  closeSync(stdout); closeSync(stderr);
+  // Automated gates stay hidden; the person doing manual acceptance must see
+  // the isolated test window (Windows applies SW_HIDE to the first GUI show).
+  const child = spawn(executable, args, { cwd: folder, env, windowsHide: !manualAcceptance, shell: false,
+    stdio: sourceOnlyConfig ? ['ignore', 'pipe', 'pipe'] : ['ignore', stdout, stderr] });
+  if (sourceOnlyConfig) {
+    for (const stream of ['stdout', 'stderr']) {
+      // Decode as one UTF-8 stream so multi-byte characters never split.
+      child[stream].setEncoding('utf8');
+      child[stream].on('data', chunk => {
+        // Buffer before redacting, so secrets split across chunks cannot escape.
+        // Trim only at a line break: a cut secret would leave an unredactable tail.
+        const text = captured[stream] + chunk;
+        if (text.length <= 2_000_000) { captured[stream] = text; return; }
+        const window = text.slice(-2_000_000);
+        const lineStart = window.indexOf('\n');
+        captured[stream] = lineStart === -1 ? '' : window.slice(lineStart + 1);
+      });
+    }
+  } else { closeSync(stdout); closeSync(stderr); }
   const state = { prefix, child, folder, control, debuggerPort, exited: false, spawnError: null };
   state.closed = new Promise(done => {
     child.once('error', error => { state.spawnError = error.message; });
-    child.once('close', (code, signal) => { state.exited = true; state.exitCode = code; state.signal = signal; done(); });
+    child.once('close', (code, signal) => {
+      state.exited = true; state.exitCode = code; state.signal = signal;
+      if (sourceOnlyConfig) {
+        writeFileSync(stdoutPath, sanitize(captured.stdout), { flag: 'wx', mode: 0o600 });
+        writeFileSync(stderrPath, sanitize(captured.stderr), { flag: 'wx', mode: 0o600 });
+      }
+      done();
+    });
   });
   children.push(state);
   try {
     const until = Date.now() + 90000;
     while (Date.now() < until) {
-      if (state.exited) throw new Error('Packaged Desktop exited during startup: ' + state.spawnError + ' ' + readFileSync(stderrPath, 'utf8').slice(-2500));
+      if (state.exited) throw new Error('Packaged Desktop exited during startup: ' + state.spawnError + ' '
+        + sanitize(sourceOnlyConfig ? captured.stderr : readFileSync(stderrPath, 'utf8')).slice(-2500));
       if (existsSync(addressPath)) {
         const readAddress = () => JSON.parse(readFileSync(addressPath, 'utf8'));
         const post = async (op, args = {}) => {
@@ -647,7 +698,7 @@ async function modelTurn(host, mode) {
   const before = await host.probe('snapshot');
   await host.rpc('session/prompt', { requestId: 'manager-prompt-' + (++serial), sessionId: host.modelSession,
     mode: 'queue', content: [{ type: 'text', text: mode }] });
-  const deadline = Date.now() + 20000;
+  const deadline = Date.now() + (sourceOnlyConfig ? 65000 : 20000);
   while (Date.now() < deadline) {
     const after = await host.probe('snapshot');
     const events = after.sessionEvents.slice(before.sessionEvents.length).filter(event => event.sessionId === host.modelSession);
@@ -720,6 +771,138 @@ async function nativeManagerRpc(host, method, args) {
   } finally { renderer.close(); }
 }
 
+async function sourceSettingsRpc(host, method, request) {
+  const renderer = await connectRenderer(host.debuggerPort, { requestTimeoutMs: 45000 });
+  try {
+    return await renderer.evaluate(`(async () => {
+      const method=${JSON.stringify('grokSearchSettings/' + method)};
+      const response=await fetch('/api/'+method, {
+        method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+        signal:AbortSignal.timeout(40000),
+        body:JSON.stringify({type:'client-request',rpcId:crypto.randomUUID(),method,
+          payload:{args:${JSON.stringify(request === undefined ? {} : { request })}}}),
+      });
+      const result=(await response.json()).result;
+      if(!result?.ok) throw new Error(result?.error?.code||'Source-only settings rejected.');
+      return result.value;
+    })()`);
+  } finally { renderer.close(); }
+}
+
+async function prepareSourceOnlyHost(runtime) {
+  currentVersion = runtime.app.version;
+  const folder = join(temporary, runtime.app.version);
+  await prepare(runtime, folder);
+  const preferences = createPrivatePreferences({ path: join(folder, 'dsh-home/profiles/desktop/grok-search/preferences.json') });
+  const before = preferences.snapshot();
+  preferences.save(before.revision, { ...before.value, grokEnabled: false, githubEnabled: false });
+  return start(runtime, folder, manualAcceptance ? 'manual-ready' : 'source-only-install');
+}
+
+async function runSourceOnly(runtime) {
+  const host = await prepareSourceOnlyHost(runtime);
+  try {
+    const installed = await installBundle(host, productTarball, PRODUCT_BUNDLE);
+    assertManagerApplied(installed, PRODUCT_BUNDLE);
+    await waitFor(host, state => state.productProgram?.phase === 'ready'
+      && state.productControl?.phase === 'required' && state.runtimeWeb?.searchProviderId === 'grok-search',
+    'Source-only product did not become ready.', 140000);
+    const preferences = await sourceSettingsRpc(host, 'preferences');
+    assert.equal(preferences.value.grokEnabled, false);
+    const settings = await sourceSettingsRpc(host, 'snapshot');
+    assert.equal(settings.config.fields.grok_api_key.configured, false);
+    assert.equal(settings.config.fields.openai_compatible_api_key.configured, false);
+    assert.equal(settings.plugin.configSource, 'environment');
+    assert.equal(settings.config.path, sourceOnlyConfig);
+    const detail = await pluginManagerRendererSnapshot(host);
+    const initialUi = await settingsStopRendererFlow(host, 'source-only');
+    const summarize = result => ({
+      mode: result.mode, isError: result.isError, textChars: result.text.length,
+      sourceUrls: [...new Set([...result.text.matchAll(/https?:\/\/[^\s<>()]+/g)].map(match => match[0]))],
+      originalSearchDelta: result.afterCalls.original - result.beforeCalls.original,
+    });
+    const search = summarize(await modelTurn(host, 'search'));
+    assert.equal(search.isError, false);
+    assert.ok(search.sourceUrls.length > 0);
+    assert.equal(search.originalSearchDelta, 0);
+    const routed = await sourceSettingsRpc(host, 'snapshot');
+    assert.equal(routed.route.grokCode, 'DISABLED');
+    assert.equal(routed.route.fallbackUsed, true);
+    assert.ok(['tavily', 'exa', 'tinyfish', 'firecrawl'].includes(routed.route.served));
+    const renderer = await connectRenderer(host.debuggerPort);
+    let routeUi;
+    try {
+      await waitForRenderer(renderer, current => current.evaluate(
+        `document.querySelector('[data-dsg-route]')?.shadowRoot?.querySelector('.row[data-id=grok] .switch')?.getAttribute('aria-checked')==='false'`));
+      routeUi = await renderer.evaluate(`(() => {
+        const root=document.querySelector('[data-dsg-route]')?.shadowRoot;
+        return {state:root?.querySelector('#routeCard')?.dataset.s,
+          status:root?.querySelector('#statusText')?.textContent,
+          grokEnabled:root?.querySelector('.row[data-id=grok] .switch')?.getAttribute('aria-checked')==='true'};
+      })()`);
+      const screenshot = await renderer.send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(join(directory, runtime.app.version + '-source-only-ui.png'), Buffer.from(screenshot.data, 'base64'), { flag: 'wx' });
+    } finally { renderer.close(); }
+    const fetch = summarize(await modelTurn(host, 'fetch'));
+    const chat = summarize(await modelTurn(host, 'chat'));
+    assert.equal(fetch.isError, false); assert.equal(chat.isError, false);
+    const disabled = await setBundleEnabled(host, PRODUCT_BUNDLE, false);
+    assertManagerApplied(disabled, PRODUCT_BUNDLE);
+    await waitFor(host, state => state.runtimeWeb?.searchProviderId === 'candidate-original'
+      && !state.productProgram, 'Source-only native disable did not restore the author route.');
+    const enabled = await setBundleEnabled(host, PRODUCT_BUNDLE, true);
+    assertManagerApplied(enabled, PRODUCT_BUNDLE);
+    await waitFor(host, state => state.productProgram?.phase === 'ready'
+      && state.productControl?.phase === 'required', 'Source-only native enable did not restore takeover.');
+    assert.equal((await sourceSettingsRpc(host, 'preferences')).value.grokEnabled, false);
+    const searchAfterEnable = summarize(await modelTurn(host, 'search'));
+    assert.equal(searchAfterEnable.isError, false);
+    assert.equal(searchAfterEnable.originalSearchDelta, 0);
+    assert.ok(searchAfterEnable.sourceUrls.length > 0);
+    const routedAfterEnable = await sourceSettingsRpc(host, 'snapshot');
+    assert.equal(routedAfterEnable.route.grokCode, 'DISABLED');
+    assert.equal(routedAfterEnable.route.fallbackUsed, true);
+    assert.ok(routedAfterEnable.route.at > routed.route.at, 'The re-enabled search must record a new route.');
+    assert.equal(sha256(sourceOnlyConfig), sourceConfigBefore);
+    const exit = await close(host);
+    assert.equal(exit.exitCode, 0); assert.equal(exit.forced, false);
+    return { installed, detail, initialUi, routeUi, search, route: routed.route, fetch, chat,
+      disabled, enabled, searchAfterEnable, routeAfterEnable: routedAfterEnable.route, exit,
+      // Derived from the observed routes, not a network packet count.
+      grokCredentialsAbsent: true, grokSearchBypassedByObservedRoutes: true,
+      sourceOnlyConfigurationUnchanged: true,
+      boundary: 'Real supplementary API through native search in official Desktop; model/fetch/author route are isolated fixtures, not real DeepSeek model or official-search acceptance.' };
+  } finally { await close(host); }
+}
+
+async function holdManualAcceptance(runtime) {
+  const host = await prepareSourceOnlyHost(runtime);
+  try {
+    assert.equal(managerNames(await host.probe('plugin-manager-state')).includes(PRODUCT_BUNDLE), false);
+    writeJson(join(directory, 'ready-for-user.json'), safe({
+      runId, version: runtime.app.version, status: 'ready-for-user', userAcceptancePassed: false,
+      pluginPreinstalled: false, productTarball, sourceOnlyConfig, isolatedProfile: host.control.profile,
+      configuredGrok: false, noBrowserAccountLogin: true,
+      boundary: 'Real Desktop UI, isolated sources-only config; offline model/fetch/author provider. No production profile or dsh:// login callback.',
+    }));
+    console.log(JSON.stringify({ runId, status: 'ready-for-user', version: runtime.app.version,
+      productTarball, evidence: join(directory, 'ready-for-user.json'),
+      instructions: 'Install this tgz in the native Plugins page. Do not use browser login. Reply with manual results; finish on stdin closes only this test Desktop.' }));
+    await new Promise(resolveHold => {
+      host.child.once('close', resolveHold);
+      const onInput = chunk => {
+        if (String(chunk).trim() === 'finish') resolveHold();
+      };
+      process.stdin.on('data', onInput);
+      host.closed.finally(() => process.stdin.off('data', onInput));
+    });
+    // Release stdin so the runner can exit after recording the result.
+    process.stdin.destroy();
+    return { manualEnvironmentPrepared: true, pluginInitiallyAbsent: true,
+      userAcceptancePassed: false, externalUserVerdictRequired: true };
+  } finally { await close(host); }
+}
+
 async function firstUseStub() {
   const key = 'dsh-first-use-' + randomUUID();
   secrets.add(key);
@@ -765,7 +948,8 @@ async function firstUseStub() {
         return;
       }
       if (provider !== 'grok') {
-        const source = { url: 'https://example.invalid/integrated/' + provider,
+        const source = { url: state.mode === 'invalid-first-source' && provider === 'exa'
+          ? 'https://[invalid-source' : 'https://example.invalid/integrated/' + provider,
           title: 'Integrated ' + provider + ' result', content: 'loopback source',
           summary: 'loopback source', description: 'loopback source', snippet: 'loopback source', score: 1 };
         response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -981,6 +1165,17 @@ async function productionDiagnosticsFlow(host, stub) {
       ordinary.sources?.[0]?.url === 'https://example.invalid/integrated/exa'
       && ordinaryRequests.length === 1 && ordinaryRequests[0].provider === 'exa');
     check('ordinary-fallback-does-not-call-official-search',
+      (await host.probe('snapshot')).calls.original === originalBefore);
+    stub.state.mode = 'invalid-first-source';
+    const invalidStart = stub.requests.length;
+    const recovered = await host.probe('product-query-result');
+    const recoveredRequests = stub.requests.slice(invalidStart);
+    check('invalid-source-URL-falls-through-to-next-provider',
+      recovered.sources?.[0]?.url === 'https://example.invalid/integrated/tavily'
+      && recoveredRequests[0]?.provider === 'exa'
+      && recoveredRequests.slice(1).some(row => row.provider === 'tavily')
+      && !recoveredRequests.some(row => ['grok', 'tinyfish', 'firecrawl'].includes(row.provider)));
+    check('invalid-source-URL-recovery-does-not-call-official',
       (await host.probe('snapshot')).calls.original === originalBefore);
     stub.state.mode = 'failed';
     const allFailedStart = stub.requests.length;
@@ -1327,9 +1522,12 @@ const beforeHashes = Object.fromEntries(runtimes.map(runtime => [runtime.app.ver
   { executable: sha256(runtime.executable), asar: sha256(runtime.archivePath) }]));
 try {
   for (const runtime of runtimes) {
-    const evidence = await (firstUse ? runFirstUse(runtime) : runVersion(runtime));
-    results.push({ version: runtime.app.version, scenario: firstUse
+    const evidence = await (manualAcceptance ? holdManualAcceptance(runtime)
+      : sourceOnlyConfig ? runSourceOnly(runtime) : firstUse ? runFirstUse(runtime) : runVersion(runtime));
+    results.push({ version: runtime.app.version, scenario: manualAcceptance ? 'manual-isolated-environment-preparation'
+      : firstUse
       ? 'first-use-native-install-auto-download-default-config-save-search-hot-toggle-reuse'
+      : sourceOnlyConfig ? 'source-only-native-install-search-hot-toggle'
       : 'official-plugin-manager-install-enable-disable-remove-restart',
       status: 'pass', evidence });
   }
@@ -1366,7 +1564,12 @@ try {
     firstUseAutoDownloadValidated: passed && firstUse,
     productionDiagnosticsUiValidated: passed && diagnostics && results.length === runtimes.length
       && results.every(row => row.evidence?.diagnosticFlow?.failed === 0),
-    realProviderCredentialsValidated: false,
+    realProviderCredentialsValidated: passed && Boolean(sourceOnlyConfig) && !manualAcceptance,
+    realGrokPrimaryValidated: false,
+    realGrokPaidTestDeferredByUser: Boolean(sourceOnlyConfig),
+    userAcceptancePassed: false,
+    manualAcceptanceEnvironment: manualAcceptance,
+    sourceOnlyConfigurationUnchanged: sourceOnlyConfig ? sha256(sourceOnlyConfig) === sourceConfigBefore : null,
     globalInstallationChanged: false,
     desktopUiDomValidated: false,
     cleanupValidated: passed,
