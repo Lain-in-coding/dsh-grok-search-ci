@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { CANDIDATE_VERSIONS } from '../scripts/lib/candidate-runtime.mjs';
+import * as desktopPreparation from '../scripts/deferred-release-desktop-prepare.mjs';
 
 const readJson = name => JSON.parse(readFileSync(new URL('../' + name, import.meta.url), 'utf8'));
 const versions = ['0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5'];
@@ -43,4 +44,14 @@ test('Desktop 候选工具接受 rc.5 但保留历史边界，不能以 alpha �
   assert(CANDIDATE_VERSIONS.includes('0.2.1-rc.3'));
   assert(!CANDIDATE_VERSIONS.includes('0.2.2-alpha.2'));
   assert(!CANDIDATE_VERSIONS.includes('0.2.1-rc.6'));
+});
+
+test('隔离测试 bundle 使用被核验的真实宿主版本，不能因旧版硬编码被 rc.5 跳过', () => {
+  assert.equal(typeof desktopPreparation.fixtureDshEngines, 'function');
+  for (const version of CANDIDATE_VERSIONS) {
+    assert.deepEqual(desktopPreparation.fixtureDshEngines(version), { dsh: version });
+  }
+  for (const version of ['', '0.2.1-rc.6', '0.2.2-alpha.2', '*']) {
+    assert.throws(() => desktopPreparation.fixtureDshEngines(version));
+  }
 });
