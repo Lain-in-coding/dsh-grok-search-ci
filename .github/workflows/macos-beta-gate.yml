@@ -13,7 +13,7 @@ on:
         required: true
         type: string
       first_use_only:
-        description: Run PluginManager, first-use and source-diagnostics gates only when they cover the changed runtime; retain hash-matched evidence for unaffected lifecycle paths.
+        description: Run clean install, PluginManager, first-use and source-diagnostics gates only; retain hash-matched evidence for unaffected lifecycle paths.
         required: true
         type: boolean
         default: false
@@ -184,7 +184,6 @@ jobs:
           test -x "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
           test -x "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
       - name: Run isolated product install gate
-        if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail

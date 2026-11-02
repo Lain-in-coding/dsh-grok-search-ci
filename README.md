@@ -61,15 +61,15 @@ DeepSeek 已[公告](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)�
 
 ## 支持范围
 
-| 系统 | 入口 | 本版本兼容范围 |
-| --- | --- | --- |
-| Windows x64 | Desktop | `0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.5` |
-| macOS Apple Silicon | Desktop | `0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.5` |
-| Linux x64（WSL Ubuntu 22.04） | CLI/Web | `0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5` |
+| 系统 | 入口 | 本版本兼容范围 | 验证情况 |
+| --- | --- | --- | --- |
+| Windows x64 | Desktop | `0.2.1-rc.2` ～ `0.2.1-rc.5` | rc.2 / rc.3 / rc.5 已测；rc.4 源码审查支持 |
+| macOS Apple Silicon | Desktop | `0.2.1-rc.2` ～ `0.2.1-rc.5` | rc.2 / rc.3 / rc.5 已测；rc.4 源码审查支持 |
+| Linux x64（WSL Ubuntu 22.04） | CLI/Web | `0.2.1-rc.2` ～ `0.2.1-rc.5` | 四个版本均已测 |
 
-**所有组合共用一个安装包。** Linux 在 WSL Ubuntu 22.04 上验证，macOS 在自动化测试环境中验证。作者已在 Windows 上用真实 Key 实测 Grok 主搜索返回结果；macOS 与 Linux 尚未做真实付费接口验收。
+**所有组合共用一个安装包。** rc.4 Desktop 已纳入兼容支持：关键宿主源码与已测 rc.3 / rc.5 一致，但未单独实测官方 rc.4 桌面发行包；支持范围与实测记录分别披露。Linux 在 WSL Ubuntu 22.04 上验证，macOS 在自动化测试环境中验证。作者已在 Windows 上用真实 Key 实测 Grok 主搜索返回结果；macOS 与 Linux 尚未做真实付费接口验收。
 
-`0.1.1` 是增加 rc.5 的兼容补丁；候选包须通过对应宿主门禁并审核后才发布，实际发布状态以 [Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 为准。**Desktop 与独立 CLI/Web 是不同入口**：Windows/macOS 的独立 CLI/Web 尚未验证；rc.4 Desktop 未取得可核验的官方发行包，不在本次支持范围。原生 Linux（非 WSL）的完整安装链路仍属验证有限，不将 WSL 通过等同于所有 Linux 环境通过。
+`0.1.1` 是补齐 rc.4 Desktop 声明与 rc.5 验证的兼容补丁，审核后才发布，实际发布状态以 [Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 为准。**Desktop 与独立 CLI/Web 是不同入口**：Windows/macOS 的独立 CLI/Web 不在本次支持范围。原生 Linux（非 WSL）的完整安装链路仍属验证有限，不将 WSL 通过等同于所有 Linux 环境通过。
 
 `grok-search-rs` 已验证程序版本为 `0.1.26`。插件优先复用兼容的已有程序，不升级全局安装，也不自动采用未经验证的 `grok-search-rs` 新版本。表外平台、入口和 DSH 新版本不作兼容承诺，升级前请核对[支持矩阵](./support-matrix.json)。
 

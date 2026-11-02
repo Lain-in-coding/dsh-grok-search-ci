@@ -24,11 +24,11 @@ test('rc.5 兼容补丁同步版本、宿主声明与锁文件，不放宽到未
   assert.deepEqual(manifest.dependencies, { '@modelcontextprotocol/client': '2.4.0', 'smol-toml': '1.9.1' });
 });
 
-test('支持矩阵保留旧组合，只增加 rc.5 三组合，不把 Windows/macOS Web 或 rc.4 Desktop 写成通过', () => {
+test('支持矩阵覆盖 rc.2 至 rc.5 的十二个明确组合，不扩张 Windows/macOS 独立 Web', () => {
   const matrix = readJson('support-matrix.json');
   const targets = matrix.targets.map(row => `${row.platform}/${row.host}/${row.dsh}`).sort();
   const expected = [
-    ...['0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.5'].flatMap(version =>
+    ...versions.flatMap(version =>
       ['win32-x64', 'darwin-arm64'].map(platform => `${platform}/Desktop/${version}`)),
     ...versions.map(version => `linux-x64/CLI/Web/${version}`),
   ].sort();
@@ -36,6 +36,24 @@ test('支持矩阵保留旧组合，只增加 rc.5 三组合，不把 Windows/ma
   assert.equal(new Set(targets).size, expected.length);
   assert(matrix.unsupported.some(value => value.includes('Windows 与 macOS') && value.includes('CLI/Web')));
   assert(matrix.notTested.some(value => value.includes('rc.4') && value.includes('Desktop')));
+});
+
+test('rc.4 Desktop 属于源码审查支持，不得冒充官方 Desktop 原包实测', () => {
+  const matrix = readJson('support-matrix.json');
+  assert.deepEqual(Object.keys(matrix.verificationLevels ?? {}).sort(), ['host-tested', 'source-reviewed']);
+  for (const row of matrix.targets) {
+    assert(Object.hasOwn(matrix.verificationLevels, row.verificationLevel));
+  }
+  const inferred = matrix.targets.filter(row => row.verificationLevel === 'source-reviewed');
+  assert.deepEqual(inferred.map(row => `${row.platform}/${row.host}/${row.dsh}`).sort(), [
+    'darwin-arm64/Desktop/0.2.1-rc.4', 'win32-x64/Desktop/0.2.1-rc.4',
+  ]);
+  assert.equal(matrix.targets.filter(row => row.verificationLevel === 'host-tested').length, 10);
+  for (const row of inferred) {
+    assert.match(row.verification, /源码/);
+    assert.match(row.verification, /未.*实测/);
+    assert.doesNotMatch(row.verification, /自动化测试通过/);
+  }
 });
 
 test('Desktop 候选工具接受 rc.5 但保留历史边界，不能以 alpha 或未来 rc 替代实测', () => {
