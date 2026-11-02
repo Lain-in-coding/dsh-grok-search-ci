@@ -84,7 +84,6 @@ export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBar
         record(origin, fromGrok(result));
         return output;
       } catch (error) {
-        if (signal?.aborted) throw signal.reason;
         // An uncertain owned-process exit is not an upstream failure. Keep the
         // error (and whenExited proof) intact so the outer executor holds its
         // faulted slot instead of hiding it behind an otherwise valid source.
@@ -93,6 +92,7 @@ export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBar
             fallbackUsed: false, failures: [], code: error.code });
           throw error;
         }
+        if (signal?.aborted) throw signal.reason;
         primary = error;
       }
       if (!sourceRouter.snapshot().available) {

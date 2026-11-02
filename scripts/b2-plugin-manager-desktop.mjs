@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { candidateRuntime } from './lib/candidate-runtime.mjs';
-import { connectRenderer, waitForRenderer } from './lib/renderer-cdp.mjs';
+import { connectRenderer, requestDesktopShutdown, waitForRenderer } from './lib/renderer-cdp.mjs';
 import {
   cleanEnvironment, commandResult, configSecrets, freshRun, project, receipt, redact, sha256, writeJson,
 } from './lib/internal-candidate-utils.mjs';
@@ -650,17 +650,7 @@ async function start(runtime, folder, phase) {
 async function close(state) {
   if (!state.exited) {
     try {
-      const response = await fetch('http://127.0.0.1:' + state.debuggerPort + '/json/version', { signal: AbortSignal.timeout(5000) });
-      const info = await response.json();
-      const socket = new WebSocket(info.webSocketDebuggerUrl);
-      await new Promise((done, reject) => {
-        socket.addEventListener('open', done, { once: true });
-        socket.addEventListener('error', reject, { once: true });
-      });
-      socket.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
-      socket.close();
-      const ended = await Promise.race([state.closed.then(() => true), sleep(20000).then(() => false)]);
-      if (!ended) throw new Error('Official Browser.close did not finish within deadline.');
+      await requestDesktopShutdown(state.debuggerPort, state.closed, { timeoutMs: 20000 });
     } catch (error) {
       state.closeError = error.message;
       if (!state.exited) { state.forced = true; state.child.kill('SIGKILL'); await state.closed; }
