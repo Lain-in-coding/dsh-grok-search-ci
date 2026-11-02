@@ -94,3 +94,12 @@ test('所有 CLI/Web 用例都检查设置 DOM，缺少浏览器参数应在启�
     assert.equal(options.browserExecutable, '/test/chromium');
   }
 });
+
+test('CLI/Web 日志索引与实际扁平文件名一致，不能指向不存在的 logs 目录', () => {
+  assert.deepEqual(cliWeb.CLI_WEB_LOG_ARTIFACTS, {
+    webStderr: 'logs-dsh-web.stderr.log',
+    webStdout: 'logs-dsh-web.stdout.log',
+    browserStderr: 'logs-linux-browser.stderr.log',
+    browserStdout: 'logs-linux-browser.stdout.log',
+  });
+});

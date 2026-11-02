@@ -602,6 +602,13 @@ function safeName(value) {
   return value.replaceAll(/[^a-zA-Z0-9._-]+/g, '-');
 }
 
+export const CLI_WEB_LOG_ARTIFACTS = Object.freeze({
+  webStderr: safeName('logs/dsh-web.stderr.log'),
+  webStdout: safeName('logs/dsh-web.stdout.log'),
+  browserStderr: safeName('logs/linux-browser.stderr.log'),
+  browserStdout: safeName('logs/linux-browser.stdout.log'),
+});
+
 function runSync(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
@@ -3246,8 +3253,8 @@ async function linuxWorker(options) {
         ? 'grok-direct-mcp-protocol.json' : null,
       grokResponsesStub: existsSync(join(artifactDir, 'grok-responses-stub-final.json'))
         ? 'grok-responses-stub-final.json' : 'grok-responses-stub-start.json',
-      webStderr: 'logs/dsh-web.stderr.log',
-      webStdout: 'logs/dsh-web.stdout.log',
+      ...Object.fromEntries(Object.entries(CLI_WEB_LOG_ARTIFACTS)
+        .map(([key, filename]) => [key, existsSync(join(artifactDir, filename)) ? filename : null])),
       settingsUi: existsSync(join(artifactDir, 'linux-settings-grok-ui.json'))
         ? 'linux-settings-grok-ui.json' : null,
       settingsUiScreenshot: existsSync(join(artifactDir, 'linux-settings-grok-ui.png'))

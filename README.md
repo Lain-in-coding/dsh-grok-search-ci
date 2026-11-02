@@ -2,17 +2,15 @@
 
 # dsh-grok-search
 
-**把各家的免费搜索额度用起来，让 DeepSeek Harness 搜索多一条退路。**
+**在 DeepSeek Harness 里配置、切换和使用多来源搜索。**
 
 多来源自动回退 · Grok 主搜索可选 · 可视化共享配置 · 一个插件
 
 [![Version](https://img.shields.io/badge/Version-0.1.1-5264FF?style=flat-square)](https://github.com/Lain-in-coding/dsh-grok-search/releases) [![MIT](https://img.shields.io/badge/License-MIT-24292f?style=flat-square)](./LICENSE) [![DSH](https://img.shields.io/badge/DSH-0.2.1%20rc.2%20%E2%80%93%20rc.5-24292f?style=flat-square)](#支持范围)
 
-[免费额度与自动回退](#免费额度与自动回退) · [界面一览](#界面一览) · [快速开始](#快速开始) · [来源与排序](#来源与排序) · [测试搜索](#测试搜索) · [共享配置](#共享配置) · [常见问题](#常见问题)
+[界面一览](#界面一览) · [快速开始](#快速开始) · [来源与排序](#来源与排序) · [测试搜索](#测试搜索) · [共享配置](#共享配置) · [常见问题](#常见问题)
 
 <img src="https://raw.githubusercontent.com/Lain-in-coding/dsh-grok-search/main/docs/images/readme-route-light.png" alt="搜索路由界面：DeepSeek Harness 与 Grok Search RS 横向连接，Grok、Tavily、Exa、Firecrawl、TinyFish 和 GitHub 纵向排列" width="960">
-
-<sub>截图和动画均为插件实际界面，使用演示数据。</sub>
 
 </div>
 
@@ -20,29 +18,10 @@
 
 文中的 **`grok-search-rs`** 指本机运行的 MCP 搜索后端程序，**Grok 主搜索**指使用 xAI Grok 模型的搜索服务，两者不是同一个概念。`0.1.26` 是 `grok-search-rs` 的程序版本，不是 Grok 模型版本。
 
-- **一家额度用完，自动尝试下一家。** 额度错误、限流或来源故障时，在请求预算内按你设定的顺序回退。也可以关闭 Grok 主搜索，从补充来源的免费额度开始。
+- **搜索来源可选，故障自动回退。** 按你设定的顺序尝试备用来源，也可以关闭 Grok 主搜索，直接使用补充来源。
 - **装好后在界面里配置。** 自动发现已有 `grok-search-rs` 程序和配置；没有程序时，下载经验证的版本到插件缓存。无需编辑 `cordis.patch.yml` 或手填路径。
 - **已有配置不用重填。** 直接读写同一份 `grok-search-rs` 配置，可查看 Key、调整顺序、检查连通性。
 - **启停不绕路。** 用 DSH 插件开关接管或恢复原搜索，保留原网页抓取设置与普通聊天。宿主开启热重载时无需重启；关闭热重载时按宿主提示操作。
-
-## 免费额度与自动回退
-
-**一家免费额度用完，不必立刻充值，也不必手动换源。** 配好多个来源后，当当前来源因额度、限流等原因返回错误，插件会在本次请求预算内依次尝试后续已开启、已配置的来源，第一个返回有效结果的来源接力完成搜索。
-
-DeepSeek 已[公告](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)：北京时间 **2026 年 11 月 1 日 00:00 起**，在 DeepSeek Harness 等工具中使用 DeepSeek API 时，原先未计费的服务端 Search／Fetch 调用开始按次收费，Search、Fetch 均为 **5 元／1,000 次成功请求**。本插件让你可以为 DSH 的 `web_search` 选择其他后端，并利用这些服务自己的免费方案：
-
-| 补充来源 | 官方免费方案 | 需要注意 |
-| --- | --- | --- |
-| [Tavily](https://www.tavily.com/pricing) | 每月 1,000 API credits | credits 不等于固定的搜索次数，消耗取决于接口与参数 |
-| [Exa](https://exa.ai/pricing) | 每月 10 美元 credits | 不同搜索模式和附加内容的单价不同 |
-| [TinyFish · TinySearch](https://www.tinyfish.ai/pricing) | 当前搜索接口免费 | 限流为每分钟 30 次、每小时 500 次，不代表无限并发 |
-| [Firecrawl](https://www.firecrawl.dev/pricing) | 每月 1,000 credits | Search 标价每 10 条结果消耗 2 credits，附加抓取等功能另计 |
-
-以上为 **2026-11-02 核对的官方方案**，适用于对应官方服务；自定义网关的费用以网关规则为准。需要自行申请 Key，额度、限流和政策可能调整。可以只配置一家开始，再加入其他来源作为备用；不要求购买 Grok 主搜索 API。
-
-**省心在于自动回退，不在于“自动管理余额”。** 插件不会查询、合并各家剩余额度，也不会在免费额度归零时主动切走：只有请求报错或没有有效结果才会继续尝试。若供应商开启了按量付费或自动充值，免费额度耗尽后请求可能仍然成功并产生费用；只想用免费额度时，请先核对对应账号的计费设置。
-
-> 本插件只接管 `web_search`，不替换原 `fetchProvider`，不免除模型 Token 或仍由原服务执行的 Fetch 费用。多个来源都失败、网络中断或总预算耗尽时仍会明确报错，不偷偷回退到 DeepSeek 官方搜索。实际是否够用、能节省多少，取决于用量与服务配置；不同来源的覆盖、速度和结果质量也不同。
 
 ## 界面一览
 
@@ -54,7 +33,7 @@ DeepSeek 已[公告](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)�
     <td width="50%"><img src="https://raw.githubusercontent.com/Lain-in-coding/dsh-grok-search/main/docs/images/readme-sources-only-dark.png" alt="深色主题：关闭 Grok 后由补充来源接管，并读取了已有的共享配置" width="100%"></td>
   </tr>
   <tr>
-    <td align="center"><sub>Windows Desktop 0.2.1-rc.3 实机界面：多个来源出错时静默回退到 Exa（响应为本机模拟）</sub></td>
+    <td align="center"><sub>Windows Desktop：多来源搜索回退界面</sub></td>
     <td align="center"><sub>深色主题：只用补充来源，已有配置自动读取，无需重填</sub></td>
   </tr>
 </table>
@@ -69,20 +48,71 @@ DeepSeek 已[公告](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)�
 
 **所有组合共用一个安装包。** rc.4 Desktop 已纳入兼容支持：关键宿主源码与已测 rc.3 / rc.5 一致，但未单独实测官方 rc.4 桌面发行包；支持范围与实测记录分别披露。Linux 在 WSL Ubuntu 22.04 上验证，macOS 在自动化测试环境中验证。作者已在 Windows 上用真实 Key 实测 Grok 主搜索返回结果；macOS 与 Linux 尚未做真实付费接口验收。
 
-`0.1.1` 包含 rc.4 Desktop 兼容声明、rc.5 验证和发布前安全/回退修复，审核后才发布，实际发布状态以 [Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 为准。**Desktop 与独立 CLI/Web 是不同入口**：Windows/macOS 的独立 CLI/Web 不在本次支持范围。原生 Linux（非 WSL）的完整安装链路仍属验证有限，不将 WSL 通过等同于所有 Linux 环境通过。
+`0.1.1` 包含 rc.4 Desktop 兼容声明、rc.5 验证和安全/回退修复，实际发布状态以 [Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 为准。**Desktop 与独立 CLI/Web 是不同入口**：Windows/macOS 的独立 CLI/Web 不在本次支持范围。原生 Linux（非 WSL）的完整安装链路仍属验证有限，不将 WSL 通过等同于所有 Linux 环境通过。
 
 `grok-search-rs` 已验证程序版本为 `0.1.26`。插件优先复用兼容的已有程序，不升级全局安装，也不自动采用未经验证的 `grok-search-rs` 新版本。表外平台、入口和 DSH 新版本不作兼容承诺，升级前请核对[支持矩阵](./support-matrix.json)。
 
 ## 快速开始
 
-1. 在 DSH 的插件页面选择「添加插件」，输入 **`dsh-grok-search`**，安装并启用。
-2. 打开已安装列表中的 `dsh-grok-search` 详情，等待 `grok-search-rs` 程序自动就绪。已有的 `grok-search-rs` 共享配置会直接显示。
-3. 选择一种起步方式：
+两种安装方式任选其一，所有系统共用一个插件包。名称安装视频录于 Windows Desktop `0.2.1-rc.3`，使用已发布插件 `0.1.0`；已精剪并加速等待画面，到「已安装」为止，实际耗时以本机为准。
 
-   - **先用免费额度：** 关闭 Grok 主搜索，点击 Tavily、Exa、TinyFish 或 Firecrawl，填写对应 Key，保存并开启。配置多家后拖动排序，作为依次回退的备用来源。
+### 方式一：在 DSH 中按名称安装
+
+1. 打开 DeepSeek Harness，点击左侧 **「插件」**。
+2. 点击右上角 **「添加插件」**，在 **「包名或地址」** 输入框中填写：
+
+   ```text
+   dsh-grok-search
+   ```
+
+3. 确认包名拼写无误，阅读来源提示，点击 **「安装」**。DSH 会查询安装源，显示目标插件的名称、说明和版本，并开始下载。
+4. 等待安装进度完成，不要反复点击安装；需要排查时可以展开 **「查看安装详情」** 查看下载过程。
+5. 看到 **「已安装」**，并确认插件名为 `dsh-grok-search`，安装即完成。启用与 Key 配置见下方[首次配置](#首次配置)。
+
+> 这里是按完整包名定位安装，不是先在搜索结果列表中选择。实录 rc.3 与已核对的 rc.5 都使用「包名或地址」输入框。若提示已经安装，直接返回已安装列表打开详情即可。
+
+<p align="center">
+  <a href="https://raw.githubusercontent.com/Lain-in-coding/dsh-grok-search/main/docs/images/install-by-name.mp4"><img src="https://raw.githubusercontent.com/Lain-in-coding/dsh-grok-search/main/docs/images/install-by-name.gif" alt="按名称安装精剪：打开插件页，输入 dsh-grok-search，点击安装，显示已安装后结束" width="960"></a>
+</p>
+
+### 方式二：下载 Release 压缩包后本地导入
+
+适合需要安装指定版本，或安装源尚未同步的情况。以下以 Windows 为例：
+
+1. 打开项目的 **[GitHub Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases)**，进入所需的已发布版本，展开页面底部的 **Assets（附件）**。
+2. 下载 **`dsh-grok-search-<版本>.tgz`**。不要下载 GitHub 自动生成的 `Source code (zip)` 或 `Source code (tar.gz)`，它们是源码归档，不是本教程使用的插件包。
+3. 用支持 `.tgz` 的解压工具解压到一个固定目录；如果先得到 `.tar` 文件，再解压一次。打开内层 **`package`** 文件夹，确认能直接看到 `package.json`、`cordis.patch.yml` 和 `src`。
+4. 在资源管理器中进入这个 `package` 文件夹，按 **`Alt+D`** 选中地址栏，再按 **`Ctrl+C`** 复制文件夹的绝对路径。例如：
+
+   ```text
+   C:\DSH-Plugins\dsh-grok-search\package
+   ```
+
+   这只是示例，必须替换为你实际解压的位置。不要复制上一级目录，也不要把 `package.json` 文件本身的路径填进去。
+
+5. 返回 DSH，打开 **「插件 → 添加插件」**，在 **「包名或地址」** 中先输入 **`file:`**，再粘贴刚复制的路径，不要带首尾引号。例如：
+
+   ```text
+   file:C:\DSH-Plugins\dsh-grok-search\package
+   ```
+
+   **目录路径前的 `file:` 不要省略。** 它让 DSH 同时安装插件依赖；只填目录路径可能变成开发用链接，出现缺少 `smol-toml` 等依赖、插件无法加载的错误。本地导入也使用这个入口，没有单独的「本地导入」按钮。
+
+6. 点击 **「安装」**，看到 **「已安装」** 即完成导入，再按下方[首次配置](#首次配置)启用。
+
+请保留解压目录，便于后续重新导入。路径必须属于运行 DSH 的电脑；远程 CLI/Web 不能直接使用浏览器所在电脑的本地路径。
+
+不想解压时，也可以在同一个输入框中直接填写已下载 `.tgz` 文件的绝对路径。安装包虽然在本地，首次安装所需依赖和 `grok-search-rs` 程序仍可能需要联网下载，不等于完全离线安装。
+
+### 首次配置
+
+1. 点击 **「立即启用」**，或打开已安装列表中的插件开关，再进入 `dsh-grok-search` 详情。确认「搜索路由」卡片出现、组件显示「运行中」，等待 `grok-search-rs` 程序就绪。已有共享配置会直接显示；没有 Key 时显示「等待配置」属正常状态。
+2. 选择一种起步方式：
+
+   - **只用补充来源：** 关闭 Grok 主搜索，点击 Tavily、Exa、TinyFish 或 Firecrawl，填写对应 Key，保存并开启。配置多家后可拖动排序。
    - **使用 Grok 主搜索：** 点击 Grok 一行，填写 API Key 并保存。xAI 官方接口保留默认地址即可；使用兼容网关时，选择对应协议并填写服务商提供的地址、Key 和模型。
 
-4. 点击「测试搜索」，在确认框中选择「开始测试」，确认 Key 可用。之后直接在 DSH 聊天里提需要联网的问题。
+3. 点击 **「测试搜索 → 开始测试」**，确认 Key 可用。之后直接在 DSH 聊天里提需要联网的问题。
 
 你不需要为每个来源都准备 Key。开启 Grok 主搜索时也可以保留补充来源作为备用；Grok API 或兼容网关的费用另计，不能把聊天订阅或网页免费使用等同于免费 API。
 
@@ -92,7 +122,7 @@ DeepSeek 已[公告](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)�
 </p>
 
 <details>
-<summary>CLI/Web、离线安装与镜像说明</summary>
+<summary>CLI/Web 命令与安装源说明</summary>
 
 CLI/Web 可执行：
 
@@ -100,9 +130,7 @@ CLI/Web 可执行：
 dsh plugin --profile web add dsh-grok-search
 ```
 
-也可以从 [GitHub Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 下载对应版本的 `dsh-grok-search-<版本>.tgz`，在添加插件时输入文件的本机绝对路径。`Source code` 压缩包不是插件安装包。
-
-直接输入包名使用 npm 的默认安装入口 `latest`；已发布版本的 `next` 为同版本入口，不需要选择平台专用包。未发布的候选不会因这份说明而自动成为默认版本。若镜像尚未同步，可稍后重试或改用 Release 里的 `.tgz`，不必修改全局 npm 源。下载 `grok-search-rs` 程序和调用搜索服务都需要联网。
+直接输入包名使用 npm 的默认安装入口 `latest`；`next` 为同版本入口。若镜像尚未同步，可在安装弹窗的 **「安装源」** 中选择 npm 官方源，或使用上方 Release 本地导入方式，不必修改全局 npm 源。下载 `grok-search-rs` 程序和调用搜索服务都需要联网。
 
 </details>
 
@@ -259,5 +287,3 @@ npm run pack:release
 如果你也想在其他 MCP 客户端使用这些能力，欢迎阅读 [grok-search-rs 的使用说明](https://github.com/Episkey-G/GrokSearch-rs#readme)，了解上游的功能与更新。两个项目独立维护。
 
 感谢 [LINUX DO](https://linux.do/) 提供技术交流与开源分享的社区空间。
-
-本项目不是 DeepSeek 或 xAI 官方产品，也不代表 `grok-search-rs` 上游项目。各服务名称与图标属于其各自权利人。
