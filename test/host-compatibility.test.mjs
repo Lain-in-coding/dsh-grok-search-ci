@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { CANDIDATE_VERSIONS } from '../scripts/lib/candidate-runtime.mjs';
 import * as desktopPreparation from '../scripts/deferred-release-desktop-prepare.mjs';
+import * as cliWeb from '../scripts/b3-cli-web.mjs';
 
 const readJson = name => JSON.parse(readFileSync(new URL('../' + name, import.meta.url), 'utf8'));
 const versions = ['0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5'];
@@ -56,6 +57,15 @@ test('rc.4 Desktop 属于源码审查支持，不得冒充官方 Desktop 原包�
   }
 });
 
+test('README 的验证边界不把全部支持组合写成自动化实测', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const boundary = readme.split('<summary>还有哪些验证边界？</summary>')[1]?.split('</details>')[0];
+  assert(boundary);
+  assert.match(boundary, /rc\.4 Desktop/);
+  assert.match(boundary, /源码审查/);
+  assert.doesNotMatch(boundary, /支持表列出的组合已完成自动化验证/);
+});
+
 test('Desktop 候选工具接受 rc.5 但保留历史边界，不能以 alpha 或未来 rc 替代实测', () => {
   assert(CANDIDATE_VERSIONS.includes('0.2.1-rc.5'));
   assert(CANDIDATE_VERSIONS.includes('0.2.1-rc.2'));
@@ -71,5 +81,16 @@ test('隔离测试 bundle 使用被核验的真实宿主版本，不能因旧版
   }
   for (const version of ['', '0.2.1-rc.6', '0.2.2-alpha.2', '*']) {
     assert.throws(() => desktopPreparation.fixtureDshEngines(version));
+  }
+});
+
+test('所有 CLI/Web 用例都检查设置 DOM，缺少浏览器参数应在启动前拒绝', () => {
+  assert.equal(typeof cliWeb.parseCliWebArguments, 'function');
+  const common = ['--dsh-cli', 'cli/bin.js', '--dsh-version', 'rc5', '--product-package', 'candidate.tgz',
+    '--grok-linux-archive', 'grok.tar.gz', '--pnpm-entry', 'pnpm.mjs', '--pnpm-store', 'store', '--pnpm-cache', 'cache'];
+  for (const value of ['smoke', 'stop', 'full']) {
+    assert.throws(() => cliWeb.parseCliWebArguments([...common, '--case', value]), /--browser-executable is required/);
+    const options = cliWeb.parseCliWebArguments([...common, '--case', value, '--browser-executable', '/test/chromium']);
+    assert.equal(options.browserExecutable, '/test/chromium');
   }
 });

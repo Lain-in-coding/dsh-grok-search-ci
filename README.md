@@ -69,7 +69,7 @@ DeepSeek 已[公告](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)�
 
 **所有组合共用一个安装包。** rc.4 Desktop 已纳入兼容支持：关键宿主源码与已测 rc.3 / rc.5 一致，但未单独实测官方 rc.4 桌面发行包；支持范围与实测记录分别披露。Linux 在 WSL Ubuntu 22.04 上验证，macOS 在自动化测试环境中验证。作者已在 Windows 上用真实 Key 实测 Grok 主搜索返回结果；macOS 与 Linux 尚未做真实付费接口验收。
 
-`0.1.1` 是补齐 rc.4 Desktop 声明与 rc.5 验证的兼容补丁，审核后才发布，实际发布状态以 [Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 为准。**Desktop 与独立 CLI/Web 是不同入口**：Windows/macOS 的独立 CLI/Web 不在本次支持范围。原生 Linux（非 WSL）的完整安装链路仍属验证有限，不将 WSL 通过等同于所有 Linux 环境通过。
+`0.1.1` 包含 rc.4 Desktop 兼容声明、rc.5 验证和发布前安全/回退修复，审核后才发布，实际发布状态以 [Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 为准。**Desktop 与独立 CLI/Web 是不同入口**：Windows/macOS 的独立 CLI/Web 不在本次支持范围。原生 Linux（非 WSL）的完整安装链路仍属验证有限，不将 WSL 通过等同于所有 Linux 环境通过。
 
 `grok-search-rs` 已验证程序版本为 `0.1.26`。插件优先复用兼容的已有程序，不升级全局安装，也不自动采用未经验证的 `grok-search-rs` 新版本。表外平台、入口和 DSH 新版本不作兼容承诺，升级前请核对[支持矩阵](./support-matrix.json)。
 
@@ -167,7 +167,7 @@ Grok 主搜索失败但补充来源返回了结果，界面显示「已静默回
 
 - 配置保存保留注释和未编辑字段。其他窗口修改了同一字段时，草稿会保留；先点击「读取最新配置」，核对后再保存。
 - 保存通常在下一次搜索生效，不改变已经在途的请求。环境变量覆盖的字段只读，插件不会修改系统环境变量。
-- Key 默认遮蔽，本机直连或 HTTPS 设置页面可点击眼睛查看、点击复制。无法确认安全传输的远程 HTTP 连接只显示脱敏状态，不允许查看、复制或提交明文 Key。
+- Key 默认遮蔽，本机直连或 HTTPS 设置页面可点击眼睛查看、点击复制。无法确认安全传输的远程 HTTP 连接只显示脱敏状态，不允许查看、复制或提交明文 Key，也不能修改服务地址，以免已有 Key 被发送到新地址。
 - 远程 Web 页面打开的是 **DSH 服务器**上的文件，不是浏览器所在电脑的文件；无法打开时可以复制路径。
 
 </details>
@@ -232,7 +232,7 @@ DSH 升级到支持范围之外时，宿主可能跳过插件，按原设置搜�
 <details>
 <summary>还有哪些验证边界？</summary>
 
-支持表列出的组合已完成自动化验证；Linux 使用 WSL，macOS 使用托管测试环境。以下情况尚未完整覆盖：原生 Linux 的全局安装路径、macOS 和 Linux 上的真实付费接口、开发时的源码热替换、多文件写入中途崩溃，以及所有并发请求组合。DSH 官方的联网网页抓取也不在本次验证范围内。
+支持范围与实测等级见上表：rc.4 Desktop 为源码审查支持，未单独实测官方桌面原包；其他组合已有对应宿主自动化记录。Linux 使用 WSL，macOS 使用托管测试环境。以下情况尚未完整覆盖：原生 Linux 的全局安装路径、macOS 和 Linux 上的真实付费接口、开发时的源码热替换、多文件写入中途崩溃，以及所有并发请求组合。DSH 官方的联网网页抓取也不在本次验证范围内。
 
 首个公开版本仍需要更多实际环境反馈，不承诺表外兼容或零故障。遇到问题，请提供系统、DSH 版本、插件版本、`grok-search-rs` 程序版本、Grok 模型名称（如有）、简短错误码和复现步骤，**不要上传 Key、完整配置或未脱敏路径**。
 

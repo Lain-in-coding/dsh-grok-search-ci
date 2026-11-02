@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "packageVersion": "0.1.1",
-  "channel": "兼容补丁候选：审核后 npm latest（next 同版本入口）与 GitHub Release 使用同一个安装包",
+  "channel": "兼容与安全修复候选：审核后 npm latest（next 同版本入口）与 GitHub Release 使用同一个安装包",
   "supportPolicy": "targets 列出本候选的兼容支持组合，verificationLevel 单独说明验证依据。支持声明不要求逐个官方 Desktop 发行包实测：rc.4 Desktop 经关键源码一致性审查并结合已有宿主证据纳入支持，但不宣称原包实测通过。新候选仍须完成受影响验证并审核后发布。Linux 证据限 WSL Ubuntu 22.04，原生 Linux 完整安装路径属于验证有限；不承诺表外环境、真实付费接口或所有故障组合均通过。",
   "verificationLevels": {
     "host-tested": "有对应系统、架构、入口和版本的宿主自动化测试记录；具体场景见 verification。运行时未变时可按源码哈希复用原范围证据，不把旧包安装写成新包安装，也不表示真实付费接口通过。",
