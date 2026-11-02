@@ -1,7 +1,8 @@
 {
   "schemaVersion": 1,
-  "packageVersion": "0.1.0-beta.1",
-  "channel": "首个公开 Beta：npm 的 next 与 latest 和 GitHub Pre-release 使用同一个安装包",
+  "packageVersion": "0.1.0",
+  "channel": "首个公开版本：npm latest（next 同版本入口）与 GitHub Release 使用同一个安装包",
+  "supportPolicy": "正式支持承诺只覆盖 targets 所列组合与其已披露的验证范围。Linux 证据限 WSL Ubuntu 22.04，原生 Linux 完整安装路径属于验证有限；版本号不表示表外环境、真实付费接口或所有故障组合已通过。",
   "platforms": [
     { "platform": "win32", "arch": "x64", "host": "Desktop" },
     { "platform": "darwin", "arch": "arm64", "host": "Desktop" },
@@ -63,7 +64,7 @@
     "darwin-arm64": "尚未做真实付费接口验收",
     "linux-x64": "尚未做真实付费接口验收"
   },
-  "versionPolicy": "每个入口至少保留最新可用版本和前一个已验证版本，各入口的版本号不要求同步。DSH 发布新版本后，要等插件发布把它加入版本范围的新版本才能使用；已发布的插件版本不会改动，旧版插件仍可按版本号安装。package.json 中的 engines.dsh 是所有目标版本的并集，不区分系统和入口：能安装不等于已验证，只有 targets 列出的组合属于支持范围。",
+  "versionPolicy": "每个入口至少保留最新可用版本和前一个已验证版本，各入口的版本号不要求同步。DSH 发布新版本后，要等插件发布把它加入版本范围的新版本才能使用；已发布的插件版本不会改动，旧版插件仍可按版本号安装。package.json 中的 engines.dsh 是所有目标版本的并集，不区分系统和入口：能安装不等于已验证，只有 targets 列出的组合及其 verification 范围属于支持承诺。",
   "unsupported": [
     "macOS Intel（darwin-x64）",
     "Windows ARM（win32-arm64）",

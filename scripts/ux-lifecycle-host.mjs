@@ -13,6 +13,7 @@ const isolated = mkdtempSync(join(tmpdir(), 'dsh-ux-lifecycle-'));
 const profile = join(isolated, 'profile');
 const modules = join(profile, 'node_modules');
 const staged = join(modules, 'dsh-grok-search');
+const productVersion = JSON.parse(readFileSync(join(project, 'package.json'), 'utf8')).version;
 mkdirSync(staged, { recursive: true });
 for (const file of ['package.json', 'cordis.patch.yml', 'src']) cpSync(join(project, file), join(staged, file), { recursive: true, errorOnExist: true });
 symlinkSync(join(runtime, 'node_modules', '@deepseek-ai'), join(modules, '@deepseek-ai'), process.platform === 'win32' ? 'junction' : 'dir');
@@ -37,7 +38,7 @@ try {
   const profileContext = { dir: profile, home: isolated, installAnchor: join(runtime, 'package.json'),
     patchPath: join(profile, 'cordis.patch.yml'), overlays: [] };
   const saveSelection = enabled => writeFileSync(join(profile, 'package.json'), JSON.stringify({
-    private: true, type: 'module', dependencies: { 'dsh-grok-search': '0.1.0-beta.1' },
+    private: true, type: 'module', dependencies: { 'dsh-grok-search': productVersion },
     dsh: { profile: { bundles: enabled ? ['dsh-grok-search'] : [] } },
   }, null, 2));
   saveSelection(true);

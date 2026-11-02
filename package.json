@@ -1,6 +1,6 @@
 {
   "name": "dsh-grok-search",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0",
   "type": "module",
   "description": "用 Grok 接管 DSH 网页搜索；支持共享配置、补充来源静默回退和即时恢复官方搜索。",
   "engines": {
@@ -13,7 +13,7 @@
     "test:provider": "node --test test/provider-core.test.mjs test/commit-message.test.mjs",
     "test:control": "node --test test/control-intent-store.test.mjs test/startup-recovery.test.mjs test/control-intent-migration.test.mjs",
     "test:migration": "node --test test/control-intent-migration.test.mjs",
-    "test:release": "node --test test/release-transaction.test.mjs",
+    "test:release": "node --test test/release-transaction.test.mjs test/pack-release.test.mjs",
     "test:wiring": "node --test test/product-wiring.test.mjs",
     "test:client": "node --test test/client.test.mjs",
     "test:session": "node --test test/session-owner.test.mjs",
@@ -30,7 +30,8 @@
     "test:all": "npm run check && npm test && npm run test:control && npm run test:release && npm run test:wiring && npm run test:client && npm run test:session && npm run test:mcp && npm run test:config && npm run test:program && npm run test:security && npm run test:source && npm run test:settings",
     "prepack": "npm run build:client && npm run test:all",
     "prepublishOnly": "npm run test:all",
-    "pack:beta": "node scripts/pack-internal.mjs --beta"
+    "pack:beta": "node scripts/pack-internal.mjs --beta",
+    "pack:release": "node scripts/pack-internal.mjs --release"
   },
   "files": [
     "src/core/",
@@ -112,7 +113,7 @@
     "url": "https://github.com/Lain-in-coding/dsh-grok-search/issues"
   },
   "publishConfig": {
-    "tag": "next",
+    "tag": "latest",
     "access": "public"
   }
 }

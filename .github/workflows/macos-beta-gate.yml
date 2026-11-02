@@ -1,4 +1,4 @@
-name: macOS Apple Silicon Beta Gate
+name: macOS Apple Silicon Release Candidate Gate
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         type: boolean
         default: false
       expected_tarball_sha256:
-        description: SHA-256 of the locally frozen beta tarball; reject any different package.
+        description: SHA-256 of the locally frozen release tarball; reject any different package.
         required: true
         type: string
       first_use_only:
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-      - name: Pack beta candidate
+      - name: Pack release candidate
         shell: pwsh
         run: |
           $expected = $env:EXPECTED_TARBALL_SHA256
@@ -47,21 +47,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Generated client differs from the frozen commit.' }
           npm run test:all
           if ($LASTEXITCODE -ne 0) { throw 'Offline gates failed.' }
-          npm run pack:beta
-          if ($LASTEXITCODE -ne 0) { throw 'Beta pack failed.' }
-          $tgz = Get-ChildItem -Path artifacts/beta-package -Recurse -Filter 'dsh-grok-search-0.1.0-beta.1.tgz' |
+          npm run pack:release
+          if ($LASTEXITCODE -ne 0) { throw 'Release pack failed.' }
+          $tgz = Get-ChildItem -Path artifacts/release-package -Recurse -Filter 'dsh-grok-search-0.1.0.tgz' |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if (-not $tgz) { throw 'Beta tarball was not produced.' }
+          if (-not $tgz) { throw 'Release tarball was not produced.' }
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $tgz.FullName).Hash.ToLowerInvariant()
           if ($hash -cne $expected) {
             throw "Tarball hash changed: $hash"
           }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dsh-grok-search-beta-tarball
+          name: dsh-grok-search-release-tarball
           path: |
-            artifacts/beta-package/**/dsh-grok-search-0.1.0-beta.1.tgz
-            artifacts/beta-package/**/package-receipt.json
+            artifacts/release-package/**/dsh-grok-search-0.1.0.tgz
+            artifacts/release-package/**/package-receipt.json
           retention-days: 1
 
   macos-arm64:
@@ -148,13 +148,13 @@ jobs:
           NODE
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: dsh-grok-search-beta-tarball
-          path: ${{ runner.temp }}/beta
+          name: dsh-grok-search-release-tarball
+          path: ${{ runner.temp }}/release
       - name: Verify the same frozen tarball on macOS
         shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(find "$RUNNER_TEMP/beta" -name 'dsh-grok-search-0.1.0-beta.1.tgz' -print -quit)"
+          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-0.1.0.tgz' -print -quit)"
           test -n "$TARBALL"
           node --input-type=module - "$TARBALL" <<'NODE'
           import { readFileSync } from 'node:fs';
@@ -188,7 +188,7 @@ jobs:
         run: |
           set -euo pipefail
           export DSH_B2_TARGET_VERSIONS=0.2.1-rc.2,0.2.1-rc.3
-          TARBALL="$(find "$RUNNER_TEMP/beta" -name 'dsh-grok-search-0.1.0-beta.1.tgz' -print -quit)"
+          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-0.1.0.tgz' -print -quit)"
           test -n "$TARBALL"
           node scripts/b2-product-install.mjs \
             --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
@@ -230,7 +230,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(find "$RUNNER_TEMP/beta" -name 'dsh-grok-search-0.1.0-beta.1.tgz' -print -quit)"
+          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-0.1.0.tgz' -print -quit)"
           node scripts/internal-candidate.mjs \
             --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
@@ -241,7 +241,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(find "$RUNNER_TEMP/beta" -name 'dsh-grok-search-0.1.0-beta.1.tgz' -print -quit)"
+          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-0.1.0.tgz' -print -quit)"
           export DSH_B2_TARGET_VERSIONS=0.2.1-rc.2,0.2.1-rc.3
           node scripts/b2-plugin-manager-desktop.mjs \
             --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
@@ -251,7 +251,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(find "$RUNNER_TEMP/beta" -name 'dsh-grok-search-0.1.0-beta.1.tgz' -print -quit)"
+          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-0.1.0.tgz' -print -quit)"
           export DSH_B2_TARGET_VERSIONS=0.2.1-rc.2,0.2.1-rc.3
           node scripts/b2-plugin-manager-desktop.mjs \
             --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \

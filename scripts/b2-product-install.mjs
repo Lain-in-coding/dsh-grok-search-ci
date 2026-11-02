@@ -206,7 +206,9 @@ finally {
     events: host.state.events.filter(event => event.type !== 'ready').slice(-10) }));
   const summary = { runId, status: fatal ? 'fail' : 'pass', counts: { pass: results.filter(row => row.status === 'pass').length,
     fail: fatal ? 1 : 0 }, fatal, ...(fatal ? { hostDiagnostics } : {}), scope: 'actual-RC2-Host-npm-installed-single-product-bundle',
-    npmInstallValidated: true, pluginManagerValidated: false, packagedDesktopInstallValidated: true, betaPackageValidated: true,
+    npmInstallValidated: true, pluginManagerValidated: false, packagedDesktopInstallValidated: true,
+    releaseChannel: packageReceipt(productTarball).releaseChannel,
+    candidatePackageValidated: !fatal, betaPackageValidated: !fatal && packageReceipt(productTarball).releaseChannel === 'beta',
     desktopUiValidated: false, productIntegrated: false, routeCounterAdapter: 'canonical-session-event', results,
     sourceHashes: ['src/control.mjs', 'src/recovery.mjs', 'src/route-verifier.mjs', 'src/core/product-control.mjs',
       'src/core/original-search-counter.mjs',

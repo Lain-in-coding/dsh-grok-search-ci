@@ -1443,9 +1443,10 @@ async function linuxWorker(options) {
     evidence.json('profile-package-installed.json', profilePackage);
     evidence.json('installed-product-manifest.json', installedManifest);
     check('installed-product-version', installedManifest.name === 'dsh-grok-search'
-      && installedManifest.version === '0.1.0-beta.1', {
+      && installedManifest.version === packageReceipt.version, {
       name: installedManifest.name,
       version: installedManifest.version,
+      expectedVersion: packageReceipt.version,
     });
     const installedProduct = join(profile, 'node_modules', 'dsh-grok-search');
     check('product-package-receipt-sha256', packageReceipt.sha256 === productSha256, {

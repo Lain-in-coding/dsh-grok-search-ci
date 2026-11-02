@@ -1370,7 +1370,8 @@ async function runVersion(runtime) {
   writeJson(join(directory, runtime.app.version + '-plugin-manager-installed-ui.json'), safe(installedUi));
   assert.match(installedUi.list.text, /已安装/);
   assert.match(installedUi.list.text, /dsh-grok-search/);
-  assert.match(installedUi.detail.text, /0\.1\.0-beta\.1/);
+  assert.ok(installedUi.detail.text.includes(expectedProductReceipt.version),
+    'PluginManager must display the frozen package version.');
   assert.match(installedUi.detail.text, /用 Grok 接管 DSH 网页搜索/);
 
   // D-29: native hot disable restores the route, and explicit re-enable reacquires.
