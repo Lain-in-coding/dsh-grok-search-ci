@@ -49,7 +49,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Offline gates failed.' }
           npm run pack:release
           if ($LASTEXITCODE -ne 0) { throw 'Release pack failed.' }
-          $tgz = Get-ChildItem -Path artifacts/release-package -Recurse -Filter 'dsh-grok-search-0.1.0.tgz' |
+          $tgz = Get-ChildItem -Path artifacts/release-package -Recurse -Filter 'dsh-grok-search-*.tgz' |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $tgz) { throw 'Release tarball was not produced.' }
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $tgz.FullName).Hash.ToLowerInvariant()
@@ -60,7 +60,7 @@ jobs:
         with:
           name: dsh-grok-search-release-tarball
           path: |
-            artifacts/release-package/**/dsh-grok-search-0.1.0.tgz
+            artifacts/release-package/**/dsh-grok-search-*.tgz
             artifacts/release-package/**/package-receipt.json
           retention-days: 1
 
@@ -74,6 +74,7 @@ jobs:
       LANG: zh_CN.UTF-8
       LC_ALL: zh_CN.UTF-8
       DSH_TELEMETRY_DISABLED: "1"
+      DSH_B2_TARGET_VERSIONS: "0.2.1-rc.3,0.2.1-rc.5"
       EXPECTED_TARBALL_SHA256: ${{ inputs.expected_tarball_sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -154,7 +155,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-0.1.0.tgz' -print -quit)"
+          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-*.tgz' -print -quit)"
           test -n "$TARBALL"
           node --input-type=module - "$TARBALL" <<'NODE'
           import { readFileSync } from 'node:fs';
@@ -169,50 +170,47 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/dsh-rc2" "$RUNNER_TEMP/dsh-rc3"
-          curl --fail --location --retry 5 --retry-delay 5 \
-            --output "$RUNNER_TEMP/rc2.zip" \
-            "https://download.deepseek.com/dsh-desk/bin/mac-arm64/deepseek-harness-0.2.1-rc.2-mac-arm64.zip"
+          mkdir -p "$RUNNER_TEMP/dsh-rc3" "$RUNNER_TEMP/dsh-rc5"
           curl --fail --location --retry 5 --retry-delay 5 \
             --output "$RUNNER_TEMP/rc3.zip" \
             "https://download.deepseek.com/dsh-desk/bin/mac-arm64/deepseek-harness-0.2.1-rc.3-mac-arm64.zip"
-          test "$(openssl dgst -sha512 -binary "$RUNNER_TEMP/rc2.zip" | openssl base64 -A)" = "vgGV720lZGEd2MnjVFOvhLVafwQH3iUDindQwwSjQ7AJaeZuu6UvjR2Msae2dkGS1SeMxxYCBu5Ks13n+K9Ydw=="
+          curl --fail --location --retry 5 --retry-delay 5 \
+            --output "$RUNNER_TEMP/rc5.zip" \
+            "https://download.deepseek.com/dsh-desk/bin/mac-arm64/deepseek-harness-0.2.1-rc.5-mac-arm64.zip"
           test "$(openssl dgst -sha512 -binary "$RUNNER_TEMP/rc3.zip" | openssl base64 -A)" = "0tCeP/zLGLtsH+S4BD4TIyRJ8TwRhh7xaJprTMOUoEfj7hYJFC3G5l6nl/2zCTS41MeE9k+KRN19RE9sqX6goQ=="
-          ditto -x -k "$RUNNER_TEMP/rc2.zip" "$RUNNER_TEMP/dsh-rc2"
+          test "$(openssl dgst -sha512 -binary "$RUNNER_TEMP/rc5.zip" | openssl base64 -A)" = "SPXR+TMC5+7v9R544aKgA2CkDrLr2XyNL/35/NuxGBbP5nrSTEGMurNRAi+R1RSlcWZm3KNdySAt0RS8Qizv9g=="
           ditto -x -k "$RUNNER_TEMP/rc3.zip" "$RUNNER_TEMP/dsh-rc3"
-          test -x "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
+          ditto -x -k "$RUNNER_TEMP/rc5.zip" "$RUNNER_TEMP/dsh-rc5"
           test -x "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
+          test -x "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
       - name: Run isolated product install gate
         if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail
-          export DSH_B2_TARGET_VERSIONS=0.2.1-rc.2,0.2.1-rc.3
-          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-0.1.0.tgz' -print -quit)"
+          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-*.tgz' -print -quit)"
           test -n "$TARBALL"
           node scripts/b2-product-install.mjs \
-            --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
-            --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc2 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc21 "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --product-package "$TARBALL"
       - name: Run product Desktop control gate
         if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail
-          export DSH_B2_TARGET_VERSIONS=0.2.1-rc.2,0.2.1-rc.3
           node scripts/b2-control-desktop.mjs \
-            --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
-            --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc2 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc21 "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --case product
       - name: Run M0-04 Desktop gate
         if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail
-          export DSH_B2_TARGET_VERSIONS=0.2.1-rc.2,0.2.1-rc.3
           node scripts/b2-control-desktop.mjs \
-            --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
-            --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc2 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc21 "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --case m0-04 \
             --grok-program "$RUNNER_TEMP/grok/grok-search-rs"
       - name: Run native hot-toggle and sources-only Desktop gates
@@ -220,20 +218,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export DSH_B2_TARGET_VERSIONS=0.2.1-rc.2,0.2.1-rc.3
           node scripts/b2-control-desktop.mjs \
-            --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
-            --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc2 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc21 "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --case ux
       - name: Run isolated internal candidate gate
         if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-0.1.0.tgz' -print -quit)"
+          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-*.tgz' -print -quit)"
           node scripts/internal-candidate.mjs \
-            --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
-            --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc2 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc21 "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --package "$TARBALL" \
             --real-grok-executable "$RUNNER_TEMP/grok/grok-search-rs" \
             --real-grok-config "$RUNNER_TEMP/grok/config.toml"
@@ -241,21 +238,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-0.1.0.tgz' -print -quit)"
-          export DSH_B2_TARGET_VERSIONS=0.2.1-rc.2,0.2.1-rc.3
+          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-*.tgz' -print -quit)"
           node scripts/b2-plugin-manager-desktop.mjs \
-            --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
-            --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc2 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc21 "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --product-package "$TARBALL"
       - name: Run new-user automatic program and configuration gates
         shell: bash
         run: |
           set -euo pipefail
-          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-0.1.0.tgz' -print -quit)"
-          export DSH_B2_TARGET_VERSIONS=0.2.1-rc.2,0.2.1-rc.3
+          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-*.tgz' -print -quit)"
           node scripts/b2-plugin-manager-desktop.mjs \
-            --desktop-rc2 "$RUNNER_TEMP/dsh-rc2/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
-            --desktop-rc21 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc2 "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            --desktop-rc21 "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --product-package "$TARBALL" \
             --first-use download \
             --diagnostics loopback

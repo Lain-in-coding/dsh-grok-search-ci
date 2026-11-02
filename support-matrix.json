@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "packageVersion": "0.1.0",
-  "channel": "首个公开版本：npm latest（next 同版本入口）与 GitHub Release 使用同一个安装包",
-  "supportPolicy": "正式支持承诺只覆盖 targets 所列组合与其已披露的验证范围。Linux 证据限 WSL Ubuntu 22.04，原生 Linux 完整安装路径属于验证有限；版本号不表示表外环境、真实付费接口或所有故障组合已通过。",
+  "packageVersion": "0.1.1",
+  "channel": "兼容补丁候选：审核后 npm latest（next 同版本入口）与 GitHub Release 使用同一个安装包",
+  "supportPolicy": "targets 列出本候选的支持目标；新增 rc.5 组合须取得同包测试证据并审核后发布，不能把目标声明当作已执行结果。正式支持只覆盖这些组合与已披露验证范围。Linux 证据限 WSL Ubuntu 22.04，原生 Linux 完整安装路径属于验证有限；版本号不表示表外环境、真实付费接口或所有故障组合已通过。",
   "platforms": [
     { "platform": "win32", "arch": "x64", "host": "Desktop" },
     { "platform": "darwin", "arch": "arm64", "host": "Desktop" },
@@ -29,6 +29,12 @@
       "verification": "自动化测试通过：安装与移除、设置页与共享配置、插件即时启停、搜索接管与恢复原搜索、配置重载时不回退官方搜索、只用补充来源、首次使用自动下载 grok-search-rs 程序；Grok 主搜索服务为模拟响应"
     },
     {
+      "platform": "win32-x64",
+      "host": "Desktop",
+      "dsh": "0.2.1-rc.5",
+      "verification": "新增候选验证范围：官方 Desktop 原始 ASAR 的隔离启动、安装与移除、设置页、插件即时启停、搜索与恢复、配置重载不回退官方、只用补充来源、首次使用与诊断；上游使用本机合成响应，实际结果由同包证据确认"
+    },
+    {
       "platform": "darwin-arm64",
       "host": "Desktop",
       "dsh": "0.2.1-rc.2",
@@ -39,6 +45,12 @@
       "host": "Desktop",
       "dsh": "0.2.1-rc.3",
       "verification": "自动化测试通过（GitHub 托管的 macOS 15 Apple Silicon）：安装与移除、设置页与共享配置、插件即时启停、搜索接管与恢复原搜索、配置重载时不回退官方搜索、只用补充来源、首次使用自动下载 grok-search-rs 程序；Grok 主搜索服务为模拟响应"
+    },
+    {
+      "platform": "darwin-arm64",
+      "host": "Desktop",
+      "dsh": "0.2.1-rc.5",
+      "verification": "新增候选验证范围：GitHub 托管 macOS 15 Apple Silicon 的官方 Desktop、安装与移除、设置页、插件即时启停、搜索与恢复、配置重载不回退官方、只用补充来源、首次使用与诊断；上游使用本机合成响应，实际结果由同包证据确认"
     },
     {
       "platform": "linux-x64",
@@ -57,6 +69,12 @@
       "host": "CLI/Web",
       "dsh": "0.2.1-rc.4",
       "verification": "自动化测试通过（WSL Ubuntu 22.04）：安装与逐文件核对、Web 设置页与共享配置、搜索与网页抓取及聊天不受影响、插件即时启停、配置重载时不回退官方搜索、只用补充来源、首次使用自动下载 grok-search-rs 程序；Grok 主搜索服务为模拟响应"
+    },
+    {
+      "platform": "linux-x64",
+      "host": "CLI/Web",
+      "dsh": "0.2.1-rc.5",
+      "verification": "新增候选验证范围：WSL Ubuntu 22.04 的 CLI/Web、安装与逐文件核对、设置页、搜索与网页抓取及聊天保持、即时启停、配置重载不回退官方、只用补充来源、程序与诊断；上游使用本机合成响应，实际结果由同包证据确认"
     }
   ],
   "realKeyVerification": {
@@ -73,6 +91,7 @@
     "DSH 0.2.2-alpha.2（不在 engines.dsh 范围内，安装会被拒绝）"
   ],
   "notTested": [
+    "DSH 0.2.1-rc.4 Desktop：未取得可核验的官方发行包，不把该版本 CLI/Web 证据视为桌面证据",
     "原生 Linux（非 WSL）上用 npm 全局安装 DSH CLI 的完整路径",
     "macOS 和 Linux 上的真实付费接口",
     "开发时的任意源码热替换",

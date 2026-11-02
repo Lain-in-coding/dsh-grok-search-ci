@@ -6,7 +6,7 @@
 
 多来源自动回退 · Grok 主搜索可选 · 可视化共享配置 · 一个插件
 
-[![Version](https://img.shields.io/badge/Version-0.1.0-5264FF?style=flat-square)](https://github.com/Lain-in-coding/dsh-grok-search/releases) [![MIT](https://img.shields.io/badge/License-MIT-24292f?style=flat-square)](./LICENSE) [![DSH](https://img.shields.io/badge/DSH-0.2.1%20rc.2%20%7C%20rc.3%20%7C%20rc.4-24292f?style=flat-square)](#支持范围)
+[![Version](https://img.shields.io/badge/Version-0.1.1-5264FF?style=flat-square)](https://github.com/Lain-in-coding/dsh-grok-search/releases) [![MIT](https://img.shields.io/badge/License-MIT-24292f?style=flat-square)](./LICENSE) [![DSH](https://img.shields.io/badge/DSH-0.2.1%20rc.2%20%E2%80%93%20rc.5-24292f?style=flat-square)](#支持范围)
 
 [免费额度与自动回退](#免费额度与自动回退) · [界面一览](#界面一览) · [快速开始](#快速开始) · [来源与排序](#来源与排序) · [测试搜索](#测试搜索) · [共享配置](#共享配置) · [常见问题](#常见问题)
 
@@ -61,15 +61,15 @@ DeepSeek 已[公告](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)�
 
 ## 支持范围
 
-| 系统 | 入口 | 已验证 DSH 版本 |
+| 系统 | 入口 | 本版本兼容范围 |
 | --- | --- | --- |
-| Windows x64 | Desktop | `0.2.1-rc.2`、`0.2.1-rc.3` |
-| macOS Apple Silicon | Desktop | `0.2.1-rc.2`、`0.2.1-rc.3` |
-| Linux x64（WSL Ubuntu 22.04） | CLI/Web | `0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4` |
+| Windows x64 | Desktop | `0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.5` |
+| macOS Apple Silicon | Desktop | `0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.5` |
+| Linux x64（WSL Ubuntu 22.04） | CLI/Web | `0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5` |
 
 **所有组合共用一个安装包。** Linux 在 WSL Ubuntu 22.04 上验证，macOS 在自动化测试环境中验证。作者已在 Windows 上用真实 Key 实测 Grok 主搜索返回结果；macOS 与 Linux 尚未做真实付费接口验收。
 
-`0.1.0` 是首个公开版本，支持承诺限于上表及已说明的验证范围。原生 Linux（非 WSL）的完整安装链路仍属验证有限，不将 WSL 通过等同于所有 Linux 环境通过。
+`0.1.1` 是增加 rc.5 的兼容补丁；候选包须通过对应宿主门禁并审核后才发布，实际发布状态以 [Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 为准。**Desktop 与独立 CLI/Web 是不同入口**：Windows/macOS 的独立 CLI/Web 尚未验证；rc.4 Desktop 未取得可核验的官方发行包，不在本次支持范围。原生 Linux（非 WSL）的完整安装链路仍属验证有限，不将 WSL 通过等同于所有 Linux 环境通过。
 
 `grok-search-rs` 已验证程序版本为 `0.1.26`。插件优先复用兼容的已有程序，不升级全局安装，也不自动采用未经验证的 `grok-search-rs` 新版本。表外平台、入口和 DSH 新版本不作兼容承诺，升级前请核对[支持矩阵](./support-matrix.json)。
 
@@ -97,12 +97,12 @@ DeepSeek 已[公告](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)�
 CLI/Web 可执行：
 
 ```shell
-dsh plugin --profile web add dsh-grok-search@0.1.0
+dsh plugin --profile web add dsh-grok-search
 ```
 
-也可以从 [GitHub Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 下载 `dsh-grok-search-0.1.0.tgz`，在添加插件时输入文件的本机绝对路径。`Source code` 压缩包不是插件安装包。
+也可以从 [GitHub Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 下载对应版本的 `dsh-grok-search-<版本>.tgz`，在添加插件时输入文件的本机绝对路径。`Source code` 压缩包不是插件安装包。
 
-直接输入包名使用 npm 的默认安装入口 `latest`；首发的 `next` 也指向同一个 `0.1.0` 安装包，不需要选择平台专用包。若镜像尚未同步，可稍后重试或改用 Release 里的 `.tgz`，不必修改全局 npm 源。下载 `grok-search-rs` 程序和调用搜索服务都需要联网。
+直接输入包名使用 npm 的默认安装入口 `latest`；已发布版本的 `next` 为同版本入口，不需要选择平台专用包。未发布的候选不会因这份说明而自动成为默认版本。若镜像尚未同步，可稍后重试或改用 Release 里的 `.tgz`，不必修改全局 npm 源。下载 `grok-search-rs` 程序和调用搜索服务都需要联网。
 
 </details>
 
