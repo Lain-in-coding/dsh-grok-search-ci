@@ -70,6 +70,26 @@ test('bounded call list never presents a truncated retry list as complete', () =
   log.dispose();
 });
 
+test('eight independent leases reject excess pages and reclaim expired slots', () => {
+  let clock = 0;
+  const log = createSearchLog({ now: () => clock });
+  const ids = Array.from({ length: 9 }, () => randomUUID());
+  for (const id of ids.slice(0, 8)) log.snapshot(id);
+  assert.throws(() => log.snapshot(ids[8]), { code: 'SEARCH_LOG_BUSY' });
+  clock = 29_999;
+  log.snapshot(ids[0]);
+  clock = 30_001;
+  log.snapshot(ids[8]);
+  const token = log.begin('active leases only');
+  log.finish(token, { outcome: 'ok', served: 'grok' });
+  assert.equal(log.snapshot(ids[0]).records.length, 1);
+  assert.equal(log.snapshot(ids[8]).records.length, 1);
+  assert.equal(log.snapshot(ids[1]).records.length, 0);
+  log.dispose();
+  assert.deepEqual(log.snapshot(ids[0]), { records: [] });
+  assert.equal(log.begin('after disposal'), null);
+});
+
 test('routed search records actual results only, not diagnostics or replay requests', async () => {
   const routed = createRoutedSearch({
     grok: { search: async () => ({ content: '', sources: [{ url: 'https://result.test' }] }) },

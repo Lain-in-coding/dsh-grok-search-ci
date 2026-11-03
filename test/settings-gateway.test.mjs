@@ -193,6 +193,38 @@ test('effective configuration identity changes when environment keys change, wit
   }
 });
 
+test('quota response cannot cross a concurrent config revision or a cancellation', async () => {
+  const { createServer } = await import('node:http');
+  let received, response;
+  const server = createServer((request, reply) => {
+    request.resume();
+    response = reply;
+    received?.();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { gateway, path } = viewGateway();
+  writeFileSync(path, `tavily_api_key = "offline-quota-key"\ntavily_api_url = "http://127.0.0.1:${server.address().port}"\n`);
+  try {
+    for (const mode of ['changed', 'cancelled']) {
+      const snapshot = await gateway.snapshot();
+      const operationId = randomUUID();
+      const dispatched = new Promise(resolve => { received = resolve; });
+      const pending = gateway.accountQuota({ provider: 'tavily',
+        expectedRevision: snapshot.config.revision, quotaRevision: snapshot.config.quotaRevision, operationId });
+      const rejection = assert.rejects(pending, { code: mode === 'changed' ? 'CONFIG_CONFLICT' : 'SETTINGS_DIAGNOSIS_CANCELLED' });
+      await dispatched;
+      if (mode === 'changed') writeFileSync(path, readFileSync(path, 'utf8') + '# other application saved\n');
+      else await gateway.cancelDiagnosis({ operationId });
+      response.end(JSON.stringify({ account: { plan_usage: 1, plan_limit: 10 } }));
+      await rejection;
+      assert.equal(gateway.diagnostics.size, 0);
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test('strict RPC codec implements the actual gateway parse boundary', () => {
   const codec = SETTINGS_DESCRIPTORS.find(row => row.method === 'save').parameters[0].codec.create();
   const request = { expectedRevision: 'missing', updates: { grok_api_key: 'sentinel' } };
