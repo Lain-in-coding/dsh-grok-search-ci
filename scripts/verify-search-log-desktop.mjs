@@ -245,6 +245,13 @@ try {
     const renderer = host.renderer = await connectRenderer(port, { requestTimeoutMs: 100_000 });
     await renderer.send('Page.bringToFront');
     await renderer.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    // Hosted macOS can default to reduced motion. Exercise both preferences
+    // deliberately instead of expecting moving packets under a static policy.
+    await renderer.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }],
+    });
+    check('animated motion preference verified', await dom(renderer,
+      `matchMedia('(prefers-reduced-motion: reduce)').matches`), false);
     await until(renderer, `document.readyState==='complete' && [...document.querySelectorAll('button')]
       .some(e=>(e.getAttribute('aria-label')||e.innerText||'').trim()==='插件')`, 60_000);
     await dom(renderer, `(() => { [...document.querySelectorAll('button')].find(e=>(e.getAttribute('aria-label')||e.innerText||'').trim()==='插件').click(); })()`);
@@ -277,6 +284,23 @@ try {
     await until(renderer, `${q('#historyStage')}.hidden`);
     check('replay can complete naturally', await click(renderer, '.log-entry [data-log-replay]'));
     await until(renderer, `${q('#historyBar')}?.dataset.phase==='done' && ${q('#historyStage')}.hidden`, 30_000);
+    await renderer.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+    });
+    // Changing the media query cancels any retained replay context. Wait for
+    // that observable listener result before clicking a new replay.
+    await until(renderer, `${q('#historyBar')}.hidden && ${q('#historyStage')}.hidden`);
+    check('reduced motion preference verified', await dom(renderer,
+      `matchMedia('(prefers-reduced-motion: reduce)').matches`));
+    check('reduced motion replay remains available', await click(renderer, '.log-entry [data-log-replay]'));
+    await until(renderer, `!${q('#historyStage')}.hidden && ${q('#historyPhase')}.textContent==='Tavily'`);
+    check('reduced motion shows terminal route without moving packets', await dom(renderer,
+      `${q('#historyStage')}.querySelectorAll('.packet').length`), 0);
+    check('reduced motion returns to current configuration', await click(renderer, '#historyStop'));
+    await until(renderer, `${q('#historyStage')}.hidden`);
+    await renderer.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }],
+    });
     check('replay did not call loopback provider', requests.length, replayCalls);
     check('replay did not invoke original provider', (await probe(host, 'snapshot')).calls.original, baseline);
     check('privacy hides query', await click(renderer, '#logPrivacy'));
@@ -365,6 +389,11 @@ try {
       const state = await dom(owned.renderer, `({body:document.body.innerText.slice(0,1500),
         mounted:Boolean(document.querySelector('[data-dsg-route]')),state:${q('#routeCard')}?.dataset.s,
         quota:${q('#quotaPanel')}?.dataset.state,
+        motionReduced:matchMedia('(prefers-reduced-motion: reduce)').matches,
+        visibility:document.visibilityState,
+        historyPhase:${q('#historyPhase')}?.textContent,
+        historyStageHidden:${q('#historyStage')}?.hidden,
+        historyPackets:${q('#historyStage')}?.querySelectorAll('.packet').length,
         nativeSwitches:[...document.querySelectorAll('[role=switch]')].map(e=>({aria:e.getAttribute('aria-label'),checked:e.getAttribute('aria-checked')}))})`);
       writeJson(join(run.directory, 'failed-state.json'), { ...state, checks: owned.checks });
     } catch { /* Original failure remains authoritative. */ }

@@ -17,6 +17,11 @@ on:
         required: true
         type: boolean
         default: false
+      search_log_only:
+        description: Run only the changed search-log Desktop gate and package checks; reuse hash-matched installation and lifecycle evidence.
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -199,6 +204,7 @@ jobs:
           test -x "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
           test -x "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
       - name: Run isolated product install gate
+        if: ${{ !inputs.search_log_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -209,7 +215,7 @@ jobs:
             --desktop-rc21 "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --product-package "$TARBALL"
       - name: Run product Desktop control gate
-        if: ${{ !inputs.first_use_only }}
+        if: ${{ !inputs.first_use_only && !inputs.search_log_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -218,7 +224,7 @@ jobs:
             --desktop-rc21 "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --case product
       - name: Run M0-04 Desktop gate
-        if: ${{ !inputs.first_use_only }}
+        if: ${{ !inputs.first_use_only && !inputs.search_log_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -228,7 +234,7 @@ jobs:
             --case m0-04 \
             --grok-program "$RUNNER_TEMP/grok/grok-search-rs"
       - name: Run native hot-toggle and sources-only Desktop gates
-        if: ${{ !inputs.first_use_only }}
+        if: ${{ !inputs.first_use_only && !inputs.search_log_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -237,7 +243,7 @@ jobs:
             --desktop-rc21 "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --case ux
       - name: Run isolated internal candidate gate
-        if: ${{ !inputs.first_use_only }}
+        if: ${{ !inputs.first_use_only && !inputs.search_log_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -249,6 +255,7 @@ jobs:
             --real-grok-executable "$RUNNER_TEMP/grok/grok-search-rs" \
             --real-grok-config "$RUNNER_TEMP/grok/config.toml"
       - name: Run original Desktop PluginManager gate
+        if: ${{ !inputs.search_log_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -258,6 +265,7 @@ jobs:
             --desktop-rc21 "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             --product-package "$TARBALL"
       - name: Run new-user automatic program and configuration gates
+        if: ${{ !inputs.search_log_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -269,6 +277,7 @@ jobs:
             --first-use download \
             --diagnostics loopback
       - name: Run search history, replay and quota Desktop gate
+        if: ${{ !inputs.first_use_only }}
         shell: bash
         run: |
           set -euo pipefail
