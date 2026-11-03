@@ -7,6 +7,7 @@ import test from 'node:test';
 import { apply as applySettings, SETTINGS_DESCRIPTORS } from '../src/settings-ui.mjs';
 import { GrokSearchError } from '../src/core/errors.mjs';
 import { createConnectionSecurity } from '../src/core/connection-security.mjs';
+import { createSearchLog } from '../src/core/search-log.mjs';
 
 test('settings gateway reads shared config, saves with CAS and keeps secrets out of snapshot', async () => {
   let Gateway;
@@ -125,6 +126,71 @@ test('remote HTTP cannot redirect stored credentials by changing a service URL',
 
 test('legacy stop RPC remains available without requiring a user-visible stop button', () => {
   assert.equal(SETTINGS_DESCRIPTORS.some(descriptor => descriptor.method === 'stop'), true);
+});
+
+test('search history uses separate secure owner RPCs; ordinary snapshot stays redacted', async () => {
+  const log = createSearchLog(), id = randomUUID();
+  const { gateway } = viewGateway({ core: { searchLog: log } });
+  await gateway.readSearchLog({ sessionId: id });
+  const token = log.begin('private-search-text');
+  log.finish(token, { outcome: 'ok', served: 'grok' });
+  const value = await gateway.readSearchLog({ sessionId: id });
+  const descriptor = SETTINGS_DESCRIPTORS.find(row => row.method === 'readSearchLog');
+  assert.deepEqual(descriptor.result.create().parse(value), value);
+  assert.equal(value.records[0].q, 'private-search-text');
+  assert.equal(JSON.stringify(await gateway.snapshot()).includes('private-search-text'), false);
+  await gateway.clearSearchLog({ sessionId: id });
+  assert.deepEqual(await gateway.readSearchLog({ sessionId: id }), { records: [] });
+  await gateway.closeSearchLog({ sessionId: id });
+  log.dispose();
+});
+
+test('private data RPCs require actual connection security even if the client claims otherwise', async () => {
+  let Gateway;
+  applySettings({ plugin(Plugin) { Gateway = Plugin; } });
+  for (const security of [null, {
+    requireOwner() {},
+    requireSecret() { throw new GrokSearchError('SETTINGS_SECURE_CONNECTION_REQUIRED', '连接不安全。'); },
+  }]) {
+    const gateway = new Gateway({ get: key => key === 'grokSearchConnectionSecurity' ? security : null, provide() {} });
+    for (const method of ['readSearchLog', 'clearSearchLog', 'closeSearchLog', 'accountQuota']) {
+      await assert.rejects(gateway[method]({ sessionId: randomUUID() }), { code: 'SETTINGS_SECURE_CONNECTION_REQUIRED' });
+    }
+  }
+});
+
+test('quota RPC rejects stale revisions, unknown providers and cancelled operations before network', async () => {
+  const { gateway, path } = viewGateway();
+  writeFileSync(path, 'tavily_api_key = "synthetic"\n');
+  const snapshot = await gateway.snapshot();
+  await assert.rejects(gateway.accountQuota({ provider: 'tavily', expectedRevision: 'stale', operationId: randomUUID() }), { code: 'CONFIG_CONFLICT' });
+  await assert.rejects(gateway.accountQuota({ provider: 'unknown', expectedRevision: snapshot.config.revision,
+    quotaRevision: snapshot.config.quotaRevision, operationId: randomUUID() }), { code: 'QUOTA_QUERY_FAILED' });
+  const operationId = randomUUID();
+  await gateway.cancelDiagnosis({ operationId });
+  await assert.rejects(gateway.accountQuota({ provider: 'tavily', expectedRevision: snapshot.config.revision,
+    quotaRevision: snapshot.config.quotaRevision, operationId }), { code: 'SETTINGS_DIAGNOSIS_CANCELLED' });
+});
+
+test('effective configuration identity changes when environment keys change, without exposing hashes of raw secrets', async () => {
+  const previous = process.env.TAVILY_API_KEY;
+  try {
+    process.env.TAVILY_API_KEY = 'synthetic-first';
+    const { gateway } = viewGateway();
+    const first = await gateway.snapshot();
+    process.env.TAVILY_API_KEY = 'synthetic-second';
+    const second = await gateway.snapshot();
+    assert.equal(first.config.revision, second.config.revision, 'file revision alone cannot identify environment secrets');
+    assert.notEqual(first.config.quotaRevision, second.config.quotaRevision);
+    assert.equal(JSON.stringify(second).includes('synthetic-second'), false);
+    await assert.rejects(gateway.accountQuota({ provider: 'tavily', expectedRevision: second.config.revision,
+      quotaRevision: first.config.quotaRevision, operationId: randomUUID() }), { code: 'CONFIG_CONFLICT' });
+    const other = viewGateway();
+    assert.notEqual((await other.gateway.snapshot()).config.quotaRevision, second.config.quotaRevision);
+  } finally {
+    if (previous === undefined) delete process.env.TAVILY_API_KEY;
+    else process.env.TAVILY_API_KEY = previous;
+  }
 });
 
 test('strict RPC codec implements the actual gateway parse boundary', () => {
@@ -256,6 +322,24 @@ test('grok diagnosis reports an internal grok-search-rs fallback as a primary fa
   const tool = await thrown.diagnoseProvider({ provider: 'grok' });
   assert.equal(tool.code, 'GROK_TOOL_ERROR');
   assert.ok(!tool.message.includes('raw upstream'));
+});
+
+test('Grok diagnostic copy distinguishes missing citations from protocol and authentication failures', async () => {
+  for (const [code, expected] of [
+    ['grok_sources_empty', 'Grok 未返回引用链接。'],
+    ['grok_content_empty', 'Grok 未返回回答内容。'],
+    ['grok_provider_error', 'Grok 接口调用失败，请检查接口协议、Base URL 和模型。'],
+  ]) {
+    const gateway = diagnosticGateway({ core: { testGrok: async () => ({
+      sources: [{ url: 'https://example.com' }],
+      diagnostic: { fallbackUsed: true, fallbackReason: code },
+    }) } });
+    const result = await gateway.diagnoseProvider({ provider: 'grok' });
+    assert.equal(result.status, 'failed');
+    assert.equal(result.code, code);
+    assert.equal(result.message, expected);
+    assert.ok(!result.message.includes('API Key'));
+  }
 });
 
 test('grok diagnosis is skipped when the primary engine is switched off', async () => {

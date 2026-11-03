@@ -6,7 +6,7 @@
 
 多来源自动回退 · Grok 主搜索可选 · 可视化共享配置 · 一个插件
 
-[![Version](https://img.shields.io/badge/Version-0.1.1-5264FF?style=flat-square)](https://github.com/Lain-in-coding/dsh-grok-search/releases) [![MIT](https://img.shields.io/badge/License-MIT-24292f?style=flat-square)](./LICENSE) [![DSH](https://img.shields.io/badge/DSH-0.2.1%20rc.2%20%E2%80%93%20rc.5-24292f?style=flat-square)](#支持范围)
+[![Version](https://img.shields.io/badge/Version-0.2.0-5264FF?style=flat-square)](https://github.com/Lain-in-coding/dsh-grok-search/releases) [![MIT](https://img.shields.io/badge/License-MIT-24292f?style=flat-square)](./LICENSE) [![DSH](https://img.shields.io/badge/DSH-0.2.1%20rc.2%20%E2%80%93%20rc.5-24292f?style=flat-square)](#支持范围)
 
 [界面一览](#界面一览) · [快速开始](#快速开始) · [来源与排序](#来源与排序) · [测试搜索](#测试搜索) · [共享配置](#共享配置) · [常见问题](#常见问题)
 
@@ -48,7 +48,7 @@
 
 **所有组合共用一个安装包。** rc.4 Desktop 已纳入兼容支持：关键宿主源码与已测 rc.3 / rc.5 一致，但未单独实测官方 rc.4 桌面发行包；支持范围与实测记录分别披露。Linux 在 WSL Ubuntu 22.04 上验证，macOS 在自动化测试环境中验证。作者已在 Windows 上用真实 Key 实测 Grok 主搜索返回结果；macOS 与 Linux 尚未做真实付费接口验收。
 
-`0.1.1` 包含 rc.4 Desktop 兼容声明、rc.5 验证和安全/回退修复，实际发布状态以 [Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 为准。**Desktop 与独立 CLI/Web 是不同入口**：Windows/macOS 的独立 CLI/Web 不在本次支持范围。原生 Linux（非 WSL）的完整安装链路仍属验证有限，不将 WSL 通过等同于所有 Linux 环境通过。
+`0.2.0` 新增最近搜索日志、链路回放与账户额度，当前为待审核候选；实际已发布版本以 [Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 为准。**Desktop 与独立 CLI/Web 是不同入口**：Windows/macOS 的独立 CLI/Web 不在本次支持范围。原生 Linux（非 WSL）的完整安装链路仍属验证有限，不将 WSL 通过等同于所有 Linux 环境通过。
 
 `grok-search-rs` 已验证程序版本为 `0.1.26`。插件优先复用兼容的已有程序，不升级全局安装，也不自动采用未经验证的 `grok-search-rs` 新版本。表外平台、入口和 DSH 新版本不作兼容承诺，升级前请核对[支持矩阵](./support-matrix.json)。
 
@@ -166,6 +166,16 @@ dsh plugin --profile web add dsh-grok-search
 </p>
 
 > 测试和搜索可能消耗供应商额度。`grok-search-rs` 执行 Grok 主搜索时可能同时预取补充来源，取消操作也不保证撤回已经发出的请求。
+
+## 最近搜索与账户额度
+
+打开插件设置页后，「最近搜索」记录本页会话期间的新搜索，最多保留 20 条。可按成功、回退、失败筛选，展开查看实际返回通道、耗时及已观测的调用；点眼睛隐藏搜索内容，点「清空记录」移除本页记录。记录只在内存中保存，关闭设置页即释放，异常断连后自动过期，不写入配置文件或磁盘。
+
+每条已完成记录的「回放」会在上方搜索路由图重现结果链路。**它不是重新搜索，不消耗额度，也不改变配置或 Key 状态。** 动画展示最终路径，不代表原始网络时序；`grok-search-rs` 未报告内部供应商时只显示「补充链」，不猜测具体来源或官方搜索调用次数。
+
+供应商弹窗中的「账户额度」可手动刷新 Tavily 套餐及 Key 用量、Firecrawl 团队余额和 TinyFish 钱包余额；自定义 Base URL 同样尝试查询，查不到显示「查询失败」。Exa 暂无已接入的普通 Key 余额接口，可从紧邻标题的「服务控制台」查看。账户额度可能包含其他应用的调用，**不是本次搜索费用**；日志仅展示接口实际报告的消耗，缺失显示「未报告」，不以余额差值推算，失败或取消也不代表免费。
+
+搜索正文和账户额度仅通过已认证的本机直连或 HTTPS 设置连接读取；不安全的远程 HTTP 仍可看脱敏配置，但不传输这些私人数据。账户查询只发送到对应配置地址，不跟随重定向，也不将自定义服务的 Key 转发给官方。
 
 ## 静默回退
 

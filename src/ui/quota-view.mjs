@@ -1,0 +1,189 @@
+/**
+ * Approved account panel; values come only from the authenticated host.
+ * Cache identities never include cleartext credentials.
+ */
+export function createQuotaView(host) {
+const { $, S, getDialog, dlg, active, DEF, SUPP, svg, EXT, esc, reduced, dialogBusy,
+  remote, uuid, operationError } = host;
+let D = null, disposed = false;
+const QUOTA_PROVIDERS = new Set(SUPP);
+const QUOTA_CONSOLE = {
+  tavily: 'https://app.tavily.com', exa: 'https://dashboard.exa.ai',
+  firecrawl: 'https://www.firecrawl.dev/app', tinyfish: 'https://agent.tinyfish.ai/wallet',
+};
+const QUOTA_ERRORS = {
+  AUTH: '查询失败 · 无查询权限', RATE_LIMIT: '查询失败 · 请求限流',
+  NETWORK: '查询失败', UNAVAILABLE: '查询失败', UNREPORTED: '查询失败',
+};
+const quotaCache = new Map();
+
+
+let quotaEpoch = 0;
+let quotaRequestSequence = 0;
+const quotaTime = () => new Date().toLocaleTimeString('zh-CN', { hour12: false });
+function quotaBase(id, p) {
+  const raw = id === 'tinyfish' ? p.searchUrl || DEF.tfSearch
+    : p.url || DEF[id === 'firecrawl' ? 'fcUrl' : id + 'Url'];
+  try {
+    const url = new URL(raw.trim());
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return null;
+    return url.href.replace(/\/+$/, '');
+  } catch { return null; }
+}
+function quotaContext(id, p, keyIndex = 0) {
+  const keys = id === 'tavily' ? p.keys : [p.key];
+  const index = Math.max(0, Math.min(Number.isSafeInteger(keyIndex) ? keyIndex : 0, keys.length - 1));
+  const key = (keys[index] || '').trim();
+  const base = quotaBase(id, p);
+  const official = id === 'tavily' ? base === DEF.tavilyUrl
+    : id === 'exa' ? base === DEF.exaUrl
+      : id === 'firecrawl' ? base === DEF.fcUrl || base === DEF.fcUrl + '/v2'
+        : base === DEF.tfSearch;
+  return { id, keyIndex: index, key, base, official,
+    scope: JSON.stringify([id, base, S.config?.quotaRevision || S.configRevision, index]) };
+}
+const quotaNumber = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+const quotaFormat = value => quotaNumber(value) ? value.toLocaleString('zh-CN', { maximumFractionDigits: 6 }) : '未报告';
+function quotaView() {
+  if (!D || D.kind !== 'card' || !QUOTA_PROVIDERS.has(D.id)) return null;
+  const context = quotaContext(D.id, D.draft, D.quotaKeyIndex);
+  const saved = D.base;
+  const unchanged = JSON.stringify(D.id === 'tavily' ? D.draft.keys : D.draft.key) === JSON.stringify(D.id === 'tavily' ? saved.keys : saved.key) && quotaBase(D.id, saved) === context.base && D.configBaseline.revision === S.configRevision && D.configBaseline.quotaRevision === S.config?.quotaRevision;
+  const cached = quotaCache.get(context.scope);
+  const status = !context.key ? 'unconfigured' : !unchanged ? 'changed'
+    : D.id === 'exa' ? 'unsupported'
+      : D.quotaRequest?.scope === context.scope ? 'loading'
+        : cached?.error ? 'error' : cached?.value ? 'ready' : 'unreported';
+  return { context, status, cached,
+    canRefresh: context.key && unchanged && !!context.base && D.id !== 'exa' && status !== 'loading' && !dialogBusy() && S.capabilities?.secretsAllowed };
+}
+function quotaHtml() {
+  const view = quotaView();
+  if (!view) return '';
+  const { context, status, cached } = view;
+  const select = context.id === 'tavily' && D.draft.keys.length > 1
+    ? `<label class="qp-key"><select data-quota-key aria-label="查看哪个 Tavily Key 的额度">${D.draft.keys.map((_, index) =>
+      `<option value="${index}"${index === context.keyIndex ? ' selected' : ''}>Key ${index + 1}</option>`).join('')}</select></label>` : '';
+  const value = ['ready', 'loading', 'error'].includes(status) ? cached?.value : null;
+  const credits = value?.kind === 'credits';
+  const placeholder = {
+    unconfigured: '填写 API Key 后查看', changed: '配置已修改，保存后刷新',
+    unsupported: '余额请到服务控制台查看', unreported: '尚未查询额度',
+    error: QUOTA_ERRORS[cached?.error] || '查询失败', loading: '正在刷新额度',
+  };
+  const stat = (label, amount, name, primary = false) => `<div class="qp-stat${primary ? ' is-primary' : ''}" data-stat="${name}">
+    <span class="qp-label">${label}</span><div class="qp-amount"><strong class="qp-value${quotaNumber(amount) ? '' : ' is-unknown'}">${quotaFormat(amount)}</strong>${quotaNumber(amount) ? '<span class="qp-unit">credits</span>' : ''}</div></div>`;
+  const metrics = credits ? `<div class="qp-stats">${stat('已用', value.used, 'used')}${stat('剩余', value.remaining, 'remaining', true)}</div>`
+    : value?.kind === 'wallet' ? `<div class="qp-wallet"><span class="qp-label">钱包余额</span><div class="qp-amount"><span class="qp-currency">$</span><strong class="qp-value">${esc(value.balance)}</strong><span class="qp-unit">USD</span></div></div>` : '';
+  const progress = credits && quotaNumber(value.used) && value.plan > 0
+    ? `<div class="qp-meter" role="meter" aria-label="账户已用额度" aria-valuemin="0" aria-valuemax="${value.plan}" aria-valuenow="${Math.min(value.plan, value.used)}" aria-valuetext="已用 ${quotaFormat(value.used)} credits，总额度 ${quotaFormat(value.plan)} credits"><i style="transform:scaleX(${Math.min(1, value.used / value.plan)})"></i></div>`
+    : credits ? '<div class="qp-meter is-unreported" aria-hidden="true"></div>' : '';
+  const identical = credits && context.id === 'tavily'
+    && ['used', 'remaining', 'plan'].every(field => quotaNumber(value[field]))
+    && value.used === value.keyUsed && value.remaining === value.keyRemaining && value.plan === value.keyLimit;
+  const hasKey = credits && context.id === 'tavily'
+    && ['keyUsed', 'keyLimit', 'keyRemaining'].some(field => quotaNumber(value[field]));
+  const restricted = hasKey && quotaNumber(value.remaining) && quotaNumber(value.keyRemaining)
+    && value.keyRemaining < value.remaining;
+  const keyHint = restricted ? `<p class="qp-key-hint">${svg('info', 'ic ic-sm')}<span>当前 Key 最多还可用 <b>${quotaFormat(value.keyRemaining)}</b> credits</span></p>` : '';
+  const keyDetails = !hasKey ? '' : identical ? '<p class="qp-equal">当前 Key 与账户用量一致。</p>'
+    : `<div class="qp-key-title">当前 Key · 独立限额</div><dl class="qp-key-stats">
+      <div><dt>已用</dt><dd data-key-stat="used">${quotaFormat(value.keyUsed)}${quotaNumber(value.keyUsed) ? ' <small>credits</small>' : ''}</dd></div>
+      <div><dt>限额</dt><dd data-key-stat="limit">${quotaFormat(value.keyLimit)}${quotaNumber(value.keyLimit) ? ' <small>credits</small>' : ''}</dd></div>
+      <div><dt>剩余</dt><dd data-key-stat="remaining">${quotaFormat(value.keyRemaining)}${quotaNumber(value.keyRemaining) ? ' <small>credits</small>' : ''}</dd></div></dl>`;
+  const stateText = status === 'loading' ? '刷新中…' : status === 'error' && value ? `${QUOTA_ERRORS[cached.error]} · 保留上次结果`
+    : value ? `更新于 ${cached.updatedAt}` : '';
+  const message = status === 'changed' ? '不沿用上一份 Key 或地址的余额。' : '';
+  const refresh = context.id === 'exa' ? '' : `<button type="button" class="qp-refresh" data-a="quota-refresh" aria-label="刷新账户额度" title="刷新账户额度"${view.canRefresh ? '' : ' disabled'} aria-busy="${status === 'loading'}">${svg('refresh', 'ic')}</button>`;
+  const consoleLink = context.official ? `<a class="dlg-link qp-console" href="${QUOTA_CONSOLE[context.id]}" target="_blank" rel="noopener noreferrer">${EXT('服务控制台')}</a>` : '';
+  const details = credits ? `<div class="qp-details${D.quotaDetailsOpen ? ' is-open' : ''}" id="quotaDetails" aria-hidden="${!D.quotaDetailsOpen}"${D.quotaDetailsOpen ? '' : ' inert'}><div class="qp-detail-inner">
+    <div class="qp-detail-content">${keyDetails}<p class="qp-note">${esc(value.note)}</p></div></div></div>` : '';
+  const disclosure = credits ? `<button type="button" class="qp-disclosure" data-a="quota-details" aria-expanded="${!!D.quotaDetailsOpen}" aria-controls="quotaDetails">额度详情${svg('chev', 'ic ic-sm')}</button>` : '';
+  const total = credits ? `<span class="qp-total">${quotaNumber(value.plan) ? `总额度 <b>${quotaFormat(value.plan)}</b> credits` : '总额度未报告'}</span>` : '';
+  return `<section class="quota-panel" id="quotaPanel" data-provider="${context.id}" data-state="${status}" data-kind="${value?.kind || ''}" aria-labelledby="quotaTitle">
+    <header class="qp-head"><div class="qp-heading"><h3 id="quotaTitle">账户额度</h3>${consoleLink}</div>${select}${refresh}</header>
+    <div class="qp-content"><div class="qp-main" aria-live="polite" aria-atomic="true">
+      ${value ? `${metrics}${progress}<div class="qp-summary">${total}<span class="qp-updated" data-state="${status}">${stateText}</span>${disclosure}</div>${keyHint}`
+        : `<div class="qp-empty"><p class="qp-placeholder" data-state="${status}">${status === 'error' ? '<span class="qp-status-dot"></span>' : ''}${placeholder[status] || '额度尚未查询'}</p>${message ? `<p class="qp-note">${message}</p>` : ''}</div>`}
+    </div>${details}${value?.kind === 'wallet' ? `<p class="qp-note qp-wallet-note">${esc(value.note)}</p>` : ''}</div></section>`;
+}
+function renderQuota() {
+  const slot = $('#quotaSlot', dlg);
+  if (!slot || !D || D.kind !== 'card') return;
+  const focused = active()?.closest('#quotaSlot')?.querySelector(':focus');
+  const focusKind = focused?.hasAttribute('data-quota-key') ? 'select'
+    : focused?.dataset.a === 'quota-details' ? 'details'
+      : focused?.classList.contains('qp-console') ? 'console'
+    : focused?.dataset.a === 'quota-refresh' || focused?.id === 'quotaPanel' ? 'refresh' : null;
+  const previousMeter = $('.qp-meter i', slot);
+  const previousTransform = previousMeter && getComputedStyle(previousMeter).transform;
+  const html = quotaHtml();
+  if (slot._html === html) return;
+  slot._html = html;
+  slot.innerHTML = html;
+  const meter = $('.qp-meter i', slot);
+  if (meter && previousTransform && !reduced()) meter.animate([
+    { transform: previousTransform }, { transform: meter.style.transform },
+  ], { duration: 220, easing: 'cubic-bezier(.2,.7,.2,1)' });
+  if (focusKind) {
+    const target = focusKind === 'select' ? $('[data-quota-key]', slot)
+      : focusKind === 'details' ? $('[data-a=quota-details]', slot)
+        : focusKind === 'console' ? $('.qp-console', slot) : $('[data-a=quota-refresh]', slot);
+    if (target && !target.disabled) target.focus({ preventScroll: true });
+    else {
+      const panel = $('#quotaPanel', slot);
+      panel.tabIndex = -1;
+      panel.focus({ preventScroll: true });
+    }
+  }
+}
+function toggleQuotaDetails() {
+  const button = $('[data-a=quota-details]', dlg), details = $('#quotaDetails', dlg);
+  if (!button || !details) return;
+  D.quotaDetailsOpen = !D.quotaDetailsOpen;
+  button.setAttribute('aria-expanded', String(D.quotaDetailsOpen));
+  details.setAttribute('aria-hidden', String(!D.quotaDetailsOpen));
+  details.inert = !D.quotaDetailsOpen;
+  details.classList.toggle('is-open', D.quotaDetailsOpen);
+  $('#quotaSlot', dlg)._html = null;
+}
+
+function cancel() {
+  const request = D?.quotaRequest;
+  if (request) void remote.cancelDiagnosis({ operationId: request.operationId }).catch(() => {});
+  if (D) D.quotaRequest = null;
+  quotaEpoch++;
+}
+async function refresh() {
+  D = getDialog();
+  const view = quotaView();
+  if (disposed || !view?.canRefresh) return;
+  const mine = D, epoch = quotaEpoch;
+  const request = { scope: view.context.scope, operationId: uuid() };
+  mine.quotaRequest = request;
+  renderQuota();
+  const previous = quotaCache.get(request.scope);
+  try {
+    const result = await remote.accountQuota({ provider: view.context.id, keyIndex: view.context.keyIndex,
+      expectedRevision: mine.configBaseline.revision, quotaRevision: mine.configBaseline.quotaRevision, operationId: request.operationId });
+    if (disposed || getDialog() !== mine || epoch !== quotaEpoch || mine.quotaRequest !== request) return;
+    D = mine; mine.quotaRequest = null;
+    if (quotaView()?.context.scope !== request.scope) return;
+    quotaCache.set(request.scope, { value: result.value, updatedAt: quotaTime(), error: result.value ? null : 'UNREPORTED' });
+  } catch {
+    if (disposed || getDialog() !== mine || epoch !== quotaEpoch || mine.quotaRequest !== request) return;
+    D = mine; mine.quotaRequest = null;
+    quotaCache.set(request.scope, { value: previous?.value ?? null, updatedAt: previous?.updatedAt, error: 'UNAVAILABLE' });
+  } finally {
+    while (quotaCache.size > 16) quotaCache.delete(quotaCache.keys().next().value);
+    if (!disposed && getDialog() === mine) { D = mine; renderQuota(); }
+  }
+}
+return Object.freeze({
+  render() { if (!disposed) { D = getDialog(); renderQuota(); } },
+  refresh, cancel,
+  details() { D = getDialog(); toggleQuotaDetails(); },
+  key(index) { D = getDialog(); if (D) { cancel(); D.quotaKeyIndex = index; D.quotaDetailsOpen = false; renderQuota(); } },
+  dispose() { cancel(); disposed = true; D = null; quotaCache.clear(); },
+});
+}

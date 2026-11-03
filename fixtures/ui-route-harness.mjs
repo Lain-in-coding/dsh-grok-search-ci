@@ -21,6 +21,7 @@ let prefs = { value: { schemaVersion: 1, grokEnabled: true, githubEnabled: true,
   sourceEnabled: Object.fromEntries(sourceNames.map(id => [id, true])) }, revision: 'missing' };
 let control, program, capabilities, route = null, configError = null, delay = 0, nextSaveError = null, nextPreferenceError = null;
 let diagnostics = {}, calls = [], themeListener = null, theme = 'light', fiberErrors = [];
+let logRecords = [], quotaReplies = {}, quotaError = false;
 const cancelledOperations = new Set(), activeDiagnostics = new Map();
 let counters = { added: 0, removed: 0 };
 const failure = (code, message) => ({ ok: false, error: { code, message, details: {} } });
@@ -35,7 +36,7 @@ function configSnapshot() {
     return [key, { ...field, source, readOnly }];
   }));
   return { path: '/isolated/grok-search-rs/config.toml', displayPath: '~/.config/grok-search-rs/config.toml',
-    revision: currentRevision, exists, fields, error: configError, unknownFields: [] };
+    revision: currentRevision, quotaRevision: currentRevision, exists, fields, error: configError, unknownFields: [] };
 }
 function snapshot() {
   return { control: clone(control), program: clone(program), config: configSnapshot(), capabilities: clone(capabilities),
@@ -61,6 +62,11 @@ const settings = new Proxy({}, { get: (_, method) => async request => {
   }
   else if (delay) await new Promise(done => setTimeout(done, delay));
   if (method === 'snapshot') return { ok: true, value: snapshot() };
+  if (method === 'readSearchLog') return { ok: true, value: { records: clone(logRecords) } };
+  if (method === 'clearSearchLog') { logRecords = []; return { ok: true, value: { records: [] } }; }
+  if (method === 'closeSearchLog') return { ok: true, value: { closed: true } };
+  if (method === 'accountQuota') return quotaError ? failure('QUOTA_QUERY_FAILED', '查询失败。')
+    : { ok: true, value: { value: clone(quotaReplies[request.provider] ?? null), supported: request.provider !== 'exa' } };
   if (method === 'preferences') return { ok: true, value: clone(prefs) };
   if (method === 'save') {
     if (nextSaveError) { const error = nextSaveError; nextSaveError = null; return failure(error, '保存失败，草稿应保留。'); }
@@ -187,6 +193,9 @@ window.harness = {
   inject(updates) { Object.assign(content, updates); currentRevision = revision(); },
   environment(updates) { environment = clone(updates); currentRevision = revision(); },
   configure(options) {
+    if (options.logs) logRecords = clone(options.logs);
+    if (options.quotas) quotaReplies = clone(options.quotas);
+    if (options.quotaError !== undefined) quotaError = options.quotaError;
     if (options.program) Object.assign(program, options.program);
     if (options.control) Object.assign(control, options.control);
     if (options.capabilities) Object.assign(capabilities, options.capabilities);

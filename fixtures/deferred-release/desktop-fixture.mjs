@@ -140,7 +140,10 @@ export async function apply(ctx) {
           if (op === 'product-query-result') {
             const web = ctx.get('web');
             if (!web) throw new Error('Public WebRuntime is not available.');
-            return web.search({ query: 'offline per-query budget probe', maxResults: 1 }, AbortSignal.timeout(5000));
+            const query = typeof args.query === 'string' && args.query.length <= 1000
+              ? args.query : 'offline per-query budget probe';
+            const timeoutMs = args.timeoutMs === 30000 ? 30000 : 5000;
+            return web.search({ query, maxResults: 1 }, AbortSignal.timeout(timeoutMs));
           }
           if (op === 'model-auth') return { url: probeCtx.connection.authenticatedUrl('http://127.0.0.1:' + probeCtx.webServer.port + '/') };
           if (op === 'tool-definition') {

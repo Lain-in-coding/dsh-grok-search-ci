@@ -268,6 +268,15 @@ jobs:
             --product-package "$TARBALL" \
             --first-use download \
             --diagnostics loopback
+      - name: Run search history, replay and quota Desktop gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-*.tgz' -print -quit)"
+          DSH_LOG_GROK_PROGRAM="$RUNNER_TEMP/grok/grok-search-rs" \
+            node scripts/verify-search-log-desktop.mjs "$TARBALL" \
+            "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+            "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
       - name: Preserve macOS evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -286,6 +295,10 @@ jobs:
             artifacts/diagnostics-desktop/**/*diagnostics-failure.json
             artifacts/diagnostics-desktop/**/*diagnostics*-ui.png
             artifacts/macos-grok-protocol/receipt.json
+            artifacts/search-log-desktop/**/summary.json
+            artifacts/search-log-desktop/**/*-checks.json
+            artifacts/search-log-desktop/**/*.png
+            artifacts/search-log-desktop/**/failed-state.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Stop local Grok Responses stub

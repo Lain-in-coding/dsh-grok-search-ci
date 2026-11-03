@@ -1,6 +1,6 @@
 {
   "name": "dsh-grok-search",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "description": "用 Grok 接管 DSH 网页搜索；支持共享配置、补充来源静默回退和即时恢复官方搜索。",
   "engines": {
@@ -20,7 +20,7 @@
     "test:mcp": "node scripts/mcp-session-probe.mjs --runtime-root .",
     "test:config": "node --test test/shared-config.test.mjs",
     "test:security": "node --test test/connection-security.test.mjs",
-    "test:source": "node --test test/source-adapters.test.mjs test/source-chain.test.mjs test/private-preferences.test.mjs test/routed-search.test.mjs",
+    "test:source": "node --test test/source-adapters.test.mjs test/source-chain.test.mjs test/private-preferences.test.mjs test/routed-search.test.mjs test/search-log.test.mjs test/account-quota.test.mjs",
     "test:settings": "node --test test/settings-gateway.test.mjs",
     "build:client": "node scripts/build-client.mjs",
     "test:program": "node --test test/program-discovery.test.mjs test/program-install.test.mjs test/program-controller.test.mjs",

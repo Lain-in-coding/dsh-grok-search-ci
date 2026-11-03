@@ -35,7 +35,7 @@ test('request contracts follow grok-search-rs v0.1.26 for every source', async (
   assert.equal(tavily.url, 'https://tavily.test/search');
   assert.equal(tavily.init.method, 'POST');
   assert.equal(tavily.init.headers.authorization, 'Bearer tvly-key');
-  assert.deepEqual(JSON.parse(tavily.init.body), { query: 'hello world', max_results: 3, include_answer: false });
+  assert.deepEqual(JSON.parse(tavily.init.body), { query: 'hello world', max_results: 3, include_answer: false, include_usage: true });
   assert.equal(exa.url, 'https://exa.test/search');
   assert.equal(exa.init.headers['x-api-key'], 'exa-key');
   assert.deepEqual(JSON.parse(exa.init.body), { query: 'hello world', numResults: 3 });
@@ -48,6 +48,27 @@ test('request contracts follow grok-search-rs v0.1.26 for every source', async (
   assert.equal(firecrawl.init.headers.authorization, 'Bearer fc-key');
   assert.deepEqual(JSON.parse(firecrawl.init.body), { query: 'hello world', limit: 3 });
   assert.ok(calls.every(call => call.init.redirect === 'error'));
+});
+
+test('observed calls report actual retries and interface credits, never credential values', async () => {
+  const observed = [];
+  const config = without({ ...baseConfig(), tavily_api_key: 'first,second' }, 'exa', 'tinyfish', 'firecrawl');
+  const { instance } = router({ config, fetchImpl: async (url, init, index) => index === 1
+    ? json({}, 429) : json({ results: [{ url: 'https://result.test' }], usage: { credits: 1 } }) });
+  await instance.search({ query: 'q', onCall: value => observed.push(value) });
+  assert.equal(observed.length, 2);
+  assert.deepEqual(observed.map(row => [row.keyIndex, row.operation, row.result]), [[0, 'search', 'failed'], [1, 'retry', 'ok']]);
+  assert.equal(observed[1].charge.amount, 1);
+  assert.equal(JSON.stringify(observed).includes('second'), false);
+});
+
+test('Exa dollar costs are estimates from the response, never a made-up price per result', async () => {
+  const observed = [];
+  const config = without(baseConfig(), 'tavily', 'tinyfish', 'firecrawl');
+  const { instance } = router({ config, fetchImpl: async () =>
+    json({ results: [{ url: 'https://result.test' }], costDollars: { total: 0.007 } }) });
+  await instance.search({ query: 'q', onCall: value => observed.push(value) });
+  assert.deepEqual(observed[0].charge, { basis: 'estimated', amount: 0.007, unit: 'USD' });
 });
 
 test('firecrawl keeps an explicit /v1 or /v2 base and reads data.web first', async () => {

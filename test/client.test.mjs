@@ -3,7 +3,10 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import { SETTINGS_DESCRIPTORS } from '../src/settings-ui.mjs';
+import { createSearchLogView } from '../src/ui/search-log-view.mjs';
+import { createQuotaView } from '../src/ui/quota-view.mjs';
 import { createSourceChain } from '../src/core/source-chain.mjs';
+import { createRouteController } from '../src/ui/route-controller.mjs';
 
 function loadClient() {
   let factory;
@@ -53,6 +56,15 @@ test('production view embeds v74 inputs without mock actions or global presentat
   assert.doesNotMatch(code, /document\.body\.(?:style|dataset|classList)|document\.documentElement\.dataset/);
 });
 
+test('production embeds exact approved log/quota factories, not scene controls or synthesized balances', () => {
+  const source = readFileSync(new URL('../src/client.js', import.meta.url), 'utf8');
+  assert.ok(source.includes(createSearchLogView.toString()));
+  assert.ok(source.includes(createQuotaView.toString()));
+  for (const id of ['logCard', 'historyStage', 'historyRoute', 'logPrivacy']) assert.ok(source.includes(id));
+  assert.doesNotMatch(source, /quotaFixture|LOG_SCENES|LOG_DEMO_QUERIES|mockbar|演示数据/);
+  assert.match(source, /scope: JSON\.stringify\(\[id, base, S\.config\?\.quotaRevision/);
+});
+
 test('client embeds the exact host source-chain rules', () => {
   const client = loadClient();
   const fields = { source_providers: { value: ['exa', 'tavily'], readOnly: false }, exa_enabled: { value: false, readOnly: false } };
@@ -60,4 +72,22 @@ test('client embeds the exact host source-chain rules', () => {
   assert.equal(JSON.stringify(client.__test.sourceChain.view(fields)), JSON.stringify(host.view(fields)));
   const change = { kind: 'order', order: ['tavily', 'exa', 'firecrawl', 'tinyfish'] };
   assert.equal(JSON.stringify(client.__test.sourceChain.plan(fields, change)), JSON.stringify(host.plan(fields, change)));
+});
+
+test('Grok form names protocols and credentials without implying a provider or key-prefix restriction', () => {
+  const code = readFileSync(new URL('../src/client.js', import.meta.url), 'utf8');
+  assert.match(code, />Responses 接口<\/button>/);
+  assert.match(code, />Chat Completions 接口<\/button>/);
+  assert.match(code, /label: 'Base URL', k: 'gwUrl'/);
+  assert.match(code, /label: 'API Key', k: 'gwKey'/);
+  assert.match(code, /keyIn\('key', p\.key, 'xai-\.\.\.\/sk-\.\.\.'\)/);
+  assert.doesNotMatch(code, /xAI Responses<\/button>|OpenAI 兼容网关<\/button>|直连 xAI 官方接口/);
+});
+
+test('generated client carries the current route controller and separates search errors from credential feedback', () => {
+  const code = readFileSync(new URL('../src/client.js', import.meta.url), 'utf8');
+  assert.ok(code.includes(createRouteController.toString()), 'rebuild client after changing the route controller');
+  assert.match(code, /class="note search-result"/);
+  assert.match(code, /GROK_SOURCES_EMPTY: \['来源', '未返回引用链接'\]/);
+  assert.doesNotMatch(code, /没有可核验来源|没有可核验回答/);
 });

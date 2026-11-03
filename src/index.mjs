@@ -55,6 +55,7 @@ export function apply(ctx, config) {
     testSearch: (request, signal) => routed.search(request, signal, 'test'),
     testGrok: routed.testGrok,
     routeSnapshot: routed.routeSnapshot,
+    searchLog: routed.searchLog,
     budgetMs: config.budgetMs ?? 120_000,
     dispose,
     registerDiagnosticCancellation(cancel) {

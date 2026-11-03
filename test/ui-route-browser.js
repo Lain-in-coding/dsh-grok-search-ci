@@ -117,6 +117,28 @@ async page => {
     check('compat mode readback selected', await page.locator('[data-a=mode][data-v=compat]').getAttribute('aria-checked'), 'true');
     await close();
 
+    await state('fresh');
+    await card('grok');
+    check('protocols have concise transport-only names', await page.locator('.seg button').allTextContents(),
+      ['Responses 接口', 'Chat Completions 接口']);
+    check('Responses placeholder includes official and third-party key examples', await page.locator('input[data-k=key]').getAttribute('placeholder'),
+      'xai-.../sk-...');
+    check('Responses does not imply official-only routing', await page.locator('.dlg-form').textContent().then(text => text.includes('直连 xAI 官方接口')), false);
+    await page.locator('input[data-k=url]').fill('https://responses.example.test');
+    await page.locator('input[data-k=key]').fill('sk-synthetic-responses');
+    await save();
+    check('third-party sk key saves in Responses fields', await read(() => {
+      const { grok_api_url, grok_api_key } = window.harness.state.content;
+      return grok_api_url === 'https://responses.example.test' && grok_api_key === 'sk-synthetic-responses';
+    }));
+    await card('grok');
+    await page.locator('[data-a=mode][data-v=compat]').click();
+    check('Chat Completions URL label is Base URL', await page.locator('label[for=f-gwUrl]').textContent(), 'Base URL');
+    check('Chat Completions key label is API Key', await page.locator('label[for=f-gwKey]').textContent(), 'API Key');
+    check('protocol switch still warns about shared-config key removal', await page.locator('.seg').locator('..').textContent().then(text =>
+      text.includes('共享配置删除') && text.includes('配置历史')));
+    await close();
+
     await state('returning');
     await page.evaluate(() => window.harness.environment({ exa_api_url: 'https://locked.example.test', exa_api_key: 'synthetic-environment' }));
     await refresh();
@@ -182,6 +204,9 @@ async page => {
     check('remount retains persisted order', await page.locator('#rowsSupp .row').first().getAttribute('data-id'), 'exa');
     check('remount has no duplicate layer', await page.locator('[data-dsg-layer]').count(), 1);
     await state('returning');
+    // boundingBox() does not wait for the entry animation. Pointer coordinates
+    // must target the settled row, not its earlier translated position.
+    await page.waitForFunction(() => !document.querySelector('[data-dsg-route]').shadowRoot.querySelector('#rowsSupp .row.enter'));
     const dragRow = page.locator('.row[data-id=exa] .row-main');
     const dragBox = await dragRow.boundingBox();
     await page.mouse.move(dragBox.x + 55, dragBox.y + dragBox.height / 2);
@@ -221,9 +246,99 @@ async page => {
     await page.screenshot({ path: run.directory + '/diagnostic-partial-dark.png' });
     check('dark theme reaches dialog layer', await read(() => document.querySelector('[data-dsg-layer]').shadowRoot.querySelector('.dsg-layer').dataset.theme), 'dark');
     await card('grok');
+    check('confirmed authentication error stays beside the key', await page.locator('input[data-k=key]').locator('..').getAttribute('data-health'), 'true');
+    check('authentication feedback remains accessible', await page.locator('input[data-k=key]').getAttribute('aria-describedby').then(value => value?.includes('f-key-message')));
+    check('authentication error is not duplicated in search summary', await page.locator('.search-result').isVisible(), false);
     await page.locator('[data-a=close]').focus();
     await page.keyboard.press('Shift+Tab');
     check('focus trapped within layer shadow root', await read(() => Boolean(document.querySelector('[data-dsg-layer]').shadowRoot.activeElement?.closest('#dialog'))));
+    await close();
+
+    for (const mode of ['responses', 'compat']) {
+      for (const code of ['grok_sources_empty', 'grok_provider_error', 'grok_timeout', 'grok_parse_error', 'HTTP_403', 'HTTP_429']) {
+        await state('returning');
+        await page.evaluate(({ mode, code }) => {
+          if (mode === 'compat') window.harness.inject({
+            grok_api_key: '', openai_compatible_api_url: 'https://chat.example.test/v1',
+            openai_compatible_api_key: 'sk-synthetic-chat', openai_compatible_model: 'grok-test',
+          });
+          window.harness.configure({ route: { at: Date.now(), origin: 'search', outcome: 'ok',
+            served: 'exa', grokCode: code, fallbackUsed: true, failures: [] } });
+          window.harness.refresh();
+        }, { mode, code });
+        await page.locator('.row[data-id=grok] .row-fault').waitFor();
+        await card('grok');
+        const key = mode === 'compat' ? 'gwKey' : 'key';
+        check(`${mode} ${code} appears in the search result area`, await page.locator('.search-result').isVisible());
+        check(`${mode} ${code} does not flag the key`, await page.locator(`input[data-k=${key}]`).locator('..').getAttribute('data-health'), 'false');
+        check(`${mode} ${code} has no key-specific error text`, await page.locator(`.f-msg[data-msg=${key}]`).isVisible(), false);
+        check(`${mode} ${code} summary is announced`, await page.locator('.search-result').getAttribute('role'), 'status');
+        if (code === 'grok_sources_empty') {
+          check(`${mode} source error says what is missing`, await page.locator('.search-result').textContent().then(text =>
+            text.includes('未返回引用链接') && text.includes('来源链接') && !text.includes('没有可核验')));
+          check(`${mode} fallback copy is backed by a successful route`, await page.locator('.search-result').textContent().then(text =>
+            text.includes('已静默回退')));
+          await page.waitForFunction(() => {
+            const dialog = document.querySelector('[data-dsg-layer]').shadowRoot.querySelector('#dialog');
+            return getComputedStyle(dialog).backgroundColor === 'rgb(22, 24, 28)' && dialog.getAnimations().length === 0;
+          });
+          await page.screenshot({ path: `${run.directory}/${mode}-source-result-dark.png` });
+          await page.evaluate(() => window.harness.theme('light'));
+          await page.waitForFunction(() => {
+            const layer = document.querySelector('[data-dsg-layer]').shadowRoot;
+            return layer.querySelector('.dsg-layer').dataset.theme === 'light'
+              && getComputedStyle(layer.querySelector('input[data-k=url], input[data-k=gwUrl]').closest('.input')).backgroundColor === 'rgb(241, 242, 245)';
+          });
+          await page.screenshot({ path: `${run.directory}/${mode}-source-result-light.png` });
+          await page.evaluate(() => window.harness.theme('dark'));
+        }
+        const model = mode === 'compat' ? 'gwModel' : 'model';
+        const previousModel = await page.locator(`input[data-k=${model}]`).inputValue();
+        await page.locator(`input[data-k=${model}]`).fill('changed-test-model');
+        check(`${mode} ${code} old result clears on model edit`, await page.locator('.search-result').isVisible(), false);
+        await page.locator(`input[data-k=${model}]`).fill(previousModel);
+        check(`${mode} ${code} original configuration retains its result`, await page.locator('.search-result').isVisible());
+        await page.locator(`[data-a=mode][data-v=${mode === 'compat' ? 'responses' : 'compat'}]`).click();
+        check(`${mode} ${code} old result does not follow a protocol switch`, await page.locator('.search-result').isVisible(), false);
+        await close();
+      }
+    }
+
+    await state('fallback');
+    await card('tavily');
+    check('provider-level Tavily 401 does not identify an individual key', await page.locator('input[data-k="keys.0"]').locator('..').getAttribute('data-health'), 'false');
+    await close();
+    await state('returning');
+    await page.evaluate(() => {
+      window.harness.configure({ diagnostics: { grok: ['OK'], tavily: ['HTTP_403', 'HTTP_401'], exa: ['OK'], github: ['OK'] } });
+    });
+    await page.locator('#testBtn').click();
+    await page.locator('[data-pop=go]').click();
+    await page.waitForFunction(() => {
+      const root = document.querySelector('[data-dsg-route]').shadowRoot;
+      return root.querySelector('.s-end')?.textContent.includes('项连通') && !root.querySelector('#testBtn').disabled;
+    }, undefined, { timeout: 15000 });
+    await card('tavily');
+    check('Tavily permissions failure is a provider result', await page.locator('.search-result').textContent().then(text => text.includes('Key 1') && text.includes('403')));
+    check('Tavily permissions failure does not flag key format', await page.locator('input[data-k="keys.0"]').locator('..').getAttribute('data-health'), 'false');
+    check('Tavily 401 still flags only its own key', await page.locator('input[data-k="keys.1"]').locator('..').getAttribute('data-health'), 'true');
+    await close();
+
+    await state('returning');
+    await page.evaluate(() => window.harness.configure({
+      diagnostics: { grok: ['grok_sources_empty'], tavily: ['EMPTY', 'EMPTY'], exa: ['EMPTY'], github: ['OK'] },
+    }));
+    await page.locator('#testBtn').click();
+    await page.locator('[data-pop=go]').click();
+    await page.waitForFunction(() => {
+      const root = document.querySelector('[data-dsg-route]').shadowRoot;
+      return root.querySelector('.s-end')?.textContent.includes('项无结果') && !root.querySelector('#testBtn').disabled;
+    }, undefined, { timeout: 15000 });
+    await card('grok');
+    check('an empty supplemental diagnosis cannot claim successful fallback', await page.locator('.search-result').textContent().then(text =>
+      text.includes('未返回引用链接') && !text.includes('已静默回退')));
+    check('empty Grok diagnosis is retained as a search result', await page.locator('.search-result').textContent().then(text =>
+      text.includes('未返回引用链接')));
     await close();
 
     await state('returning');
@@ -305,7 +420,7 @@ async page => {
     await page.screenshot({ path: run.directory + '/failure.png' });
   }
   const summary = { runId: run.runId, scope: 'generated production client + offline synthetic host shim; not Desktop or paid-provider evidence',
-    command: 'playwright-cli -s=dsg-v74 run-code --filename=test/ui-route-browser.js',
+    command: 'playwright-cli run-code --filename=test/ui-route-browser.js',
     passed: results.filter(result => result.passed).length, failed: results.filter(result => !result.passed).length,
     pageErrors: errors, results };
   const evidence = await page.evaluate(async summary => {

@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac, randomBytes } from 'node:crypto';
 import { dirname, isAbsolute, join, sep } from 'node:path';
 import { createSharedConfigStore, CONFIG_FIELDS } from './core/shared-config.mjs';
 import { resolveSharedConfigPath } from './core/config-path.mjs';
 import { GrokSearchError } from './core/errors.mjs';
 import { createPrivatePreferences } from './core/private-preferences.mjs';
+import { queryAccountQuota } from './core/account-quota.mjs';
 import { createSettingsCodec as codec } from './core/settings-codec.mjs';
 
 // The peer is supplied by DSH at runtime. Keeping a tiny test fallback lets
@@ -53,9 +54,9 @@ const GROK_MESSAGES = Object.freeze({
   grok_auth_error: 'Grok 认证失败，请检查 API Key 或登录凭据。',
   grok_timeout: 'Grok 响应超时。',
   grok_parse_error: 'Grok 返回了无法解析的结果。',
-  grok_provider_error: 'Grok 接口调用失败，请检查 API Key、BaseUrl 和模型。',
-  grok_content_empty: 'Grok 没有返回可核验的回答。',
-  grok_sources_empty: 'Grok 没有返回可核验的来源。',
+  grok_provider_error: 'Grok 接口调用失败，请检查接口协议、Base URL 和模型。',
+  grok_content_empty: 'Grok 未返回回答内容。',
+  grok_sources_empty: 'Grok 未返回引用链接。',
   GROK_TIMEOUT: 'Grok 响应超时。',
   GROK_PROGRAM_MISSING: 'Grok 程序尚未就绪，请等待自动准备完成。',
   GROK_CONFIG_INVALID: 'Grok 配置文件无效。',
@@ -109,6 +110,7 @@ const configSchema = {
     displayPath: { type: 'string' },
     exists: { type: 'boolean' },
     revision: { type: 'string' },
+    quotaRevision: { type: 'string' },
     fields: { type: 'object', additionalProperties: true },
     unknownFields: { type: 'array', items: { type: 'string' } },
     error: nullableError,
@@ -291,6 +293,40 @@ const stopJsonSchema = {
 };
 
 const descriptors = [
+  ...['readSearchLog', 'clearSearchLog', 'closeSearchLog'].map(method => ({
+    id: `dsh-grok-search#grokSearchSettings/${method}`,
+    service: REMOTE_SERVICE, namespace: REMOTE_SERVICE, method,
+    description: 'Manage a bounded volatile search history lease over a secure owner connection.',
+    invocation: { kind: 'direct' },
+    parameters: [{ name: 'request', wire: 'request', source: 'json',
+      codec: codec(`dsh-grok-search/settings#${method}Request`, {
+        type: 'object', properties: { sessionId: { type: 'string' } },
+        required: ['sessionId'], additionalProperties: false,
+      }) }],
+    result: codec(`dsh-grok-search/settings#${method}Result`, {
+      type: 'object', properties: {
+        records: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        closed: { type: 'boolean' },
+      }, additionalProperties: false,
+    }),
+  })),
+  {
+    id: 'dsh-grok-search#grokSearchSettings/accountQuota',
+    service: REMOTE_SERVICE, namespace: REMOTE_SERVICE, method: 'accountQuota',
+    description: 'Query only the saved provider account; never returns credentials.',
+    invocation: { kind: 'direct' },
+    parameters: [{ name: 'request', wire: 'request', source: 'json',
+      codec: codec('dsh-grok-search/settings#AccountQuotaRequest', {
+        type: 'object', properties: { provider: { type: 'string' }, keyIndex: { type: 'number' },
+          expectedRevision: { type: 'string' }, operationId: { type: 'string' }, quotaRevision: { type: 'string' } },
+        required: ['provider', 'expectedRevision', 'operationId', 'quotaRevision'], additionalProperties: false,
+      }) }],
+    result: codec('dsh-grok-search/settings#AccountQuotaResult', {
+      type: 'object', properties: { supported: { type: 'boolean' },
+        value: { anyOf: [{ type: 'object', additionalProperties: true }, { type: 'null' }] } },
+      required: ['supported', 'value'], additionalProperties: false,
+    }),
+  },
   {
     id: 'dsh-grok-search#grokSearchSettings/snapshot',
     service: REMOTE_SERVICE, namespace: REMOTE_SERVICE, method: 'snapshot',
@@ -466,6 +502,8 @@ class GrokSearchSettingsGateway extends Service {
     });
     this.diagnostics = new Map();
     this.cancelledDiagnostics = new Map();
+    // Never expose an unkeyed secret hash or reuse identities across lifetimes.
+    this.quotaIdentityKey = randomBytes(32);
     const cancel = () => {
       for (const controller of this.diagnostics.values()) {
         controller.abort(new GrokSearchError('SETTINGS_DIAGNOSIS_CANCELLED', '插件已卸载，测试已取消。'));
@@ -502,12 +540,17 @@ class GrokSearchSettingsGateway extends Service {
       : { secretsAllowed: false, transport: 'restricted', reason: '设置服务未加载。' };
   }
 
+  _quotaRevision(store, effective = store.readEffective()) {
+    return createHmac('sha256', this.quotaIdentityKey)
+      .update(JSON.stringify([this._configPath(), effective])).digest('hex');
+  }
+
   async snapshot() {
     this._owner();
     let config;
     try {
-      const current = this._store().snapshot();
-      config = { ...current, displayPath: displayPath(current.path), error: null };
+      const store = this._store(), current = store.snapshot();
+      config = { ...current, quotaRevision: this._quotaRevision(store), displayPath: displayPath(current.path), error: null };
     } catch (error) {
       const path = this.program?.snapshot?.()?.configPath || resolveSharedConfigPath({});
       config = {
@@ -552,11 +595,12 @@ class GrokSearchSettingsGateway extends Service {
     // or clearing destinations by the same transport proof as secret writes.
     const needsSecret = Object.keys(updates).some(key => ['secret', 'url'].includes(CONFIG_FIELDS[key]?.type));
     if (needsSecret) this.security.requireSecret(this.ctx);
-    const config = this._store().save({
+    const store = this._store();
+    const config = store.save({
       expectedRevision: request.expectedRevision,
       updates,
     });
-    return { config };
+    return { config: { ...config, quotaRevision: this._quotaRevision(store) } };
   }
 
   async reveal(request = {}) {
@@ -580,11 +624,12 @@ class GrokSearchSettingsGateway extends Service {
     // A history revision can contain every credential in the shared file.
     // Restoring it is a secret write even when the original edit was not.
     this.security.requireSecret(this.ctx);
-    const config = this._store().restore({
+    const store = this._store();
+    const config = store.restore({
       expectedRevision: request.expectedRevision,
       revision: request.revision,
     });
-    return { config };
+    return { config: { ...config, quotaRevision: this._quotaRevision(store) } };
   }
 
   async prepareProgram() {
@@ -745,6 +790,47 @@ class GrokSearchSettingsGateway extends Service {
     // Only DSH-only switches live here (Grok on/off for DSH, GitHub in tests).
     // Source order and on/off are the shared config's source_providers/*_enabled.
     return this.preferenceStore.snapshot();
+  }
+
+  _privateView() {
+    this._owner();
+    if (!this.security) throw new GrokSearchError('SETTINGS_SECURE_CONNECTION_REQUIRED', '请通过安全连接查看。');
+    this.security.requireSecret(this.ctx);
+  }
+
+  async readSearchLog(request = {}) {
+    this._privateView();
+    return this.core?.searchLog?.snapshot(request.sessionId) ?? { records: [] };
+  }
+
+  async clearSearchLog(request = {}) {
+    this._privateView();
+    return this.core?.searchLog?.clear(request.sessionId) ?? { records: [] };
+  }
+
+  async closeSearchLog(request = {}) {
+    this._privateView();
+    return this.core?.searchLog?.close(request.sessionId) ?? { closed: true };
+  }
+
+  async accountQuota(request = {}) {
+    this._privateView();
+    const store = this._store();
+    const revision = store.snapshot().revision;
+    const effective = store.readEffective();
+    const identity = this._quotaRevision(store, effective);
+    if (typeof request.expectedRevision !== 'string' || request.expectedRevision !== revision) {
+      throw new GrokSearchError('CONFIG_CONFLICT', '配置已变更，请重新读取后查询。');
+    }
+    if (request.quotaRevision !== identity) throw new GrokSearchError('CONFIG_CONFLICT', '有效配置已变更，请重新读取后查询。');
+    return this._diagnosisWork(request, async signal => {
+      const result = await queryAccountQuota({ provider: request.provider, keyIndex: request.keyIndex ?? 0,
+        config: effective, signal });
+      if (store.snapshot().revision !== revision || this._quotaRevision(store) !== identity) {
+        throw new GrokSearchError('CONFIG_CONFLICT', '配置已变更，请重新读取后查询。');
+      }
+      return result;
+    });
   }
 
   async savePreferences(request = {}) {

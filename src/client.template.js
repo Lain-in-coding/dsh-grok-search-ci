@@ -9,6 +9,8 @@ window.__ModuleLoader__.load({
     const LOGOS = __LOGOS__;
     const SOURCE_CHAIN = (__SOURCE_CHAIN_FACTORY__)();
     const ROUTE_CONTROLLER = (__ROUTE_CONTROLLER_FACTORY__);
+    const SEARCH_LOG = (__SEARCH_LOG_FACTORY__);
+    const QUOTA_VIEW = (__QUOTA_FACTORY__);
     const ROUTE_CSS = __ROUTE_CSS__;
     const ROUTE_CARD = __ROUTE_CARD__;
     const ROUTE_LAYER = __ROUTE_LAYER__;
@@ -62,6 +64,7 @@ window.__ModuleLoader__.load({
         const controller = ROUTE_CONTROLLER({
           root, layer: layerShadow.querySelector('.dsg-layer'),
           remote: remoteAdapter(remote), logos: LOGOS, sourceChain: SOURCE_CHAIN, memory: memory.current,
+          createSearchLogView: SEARCH_LOG, createQuotaView: QUOTA_VIEW,
         });
         const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
         const updateTheme = () => controller.setTheme(theme?.current === null || theme?.current === undefined

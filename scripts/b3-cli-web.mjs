@@ -2325,6 +2325,44 @@ async function linuxWorker(options) {
         check('linux-settings-TinyFish-unconfigured-switch', await renderer.evaluate(`${q('.head-switch .switch')}
           ?.getAttribute('aria-checked') === 'false'`));
         await click('[data-a=cancel]');
+        await waitForRenderer(renderer, current => current.evaluate(`${q('#overlay')}?.hidden === true`));
+        // New log surface uses the real host RPC and a real managed MCP request;
+        // only the HTTP model response is supplied by the existing loopback stub.
+        await waitForRenderer(renderer, current => current.evaluate(`Boolean(${q('#logCard')})`));
+        await delay(2800);
+        const logLease = crypto.randomUUID();
+        const logRead = await settingsCall('readSearchLog', { sessionId: logLease });
+        check('linux-search-log-authenticated-opt-in', logRead.ok === true && logRead.value.records.length === 0);
+        const loggedAnswer = await probe('product-query-result');
+        check('linux-search-log-real-provider-result', loggedAnswer.sources.length > 0);
+        await waitForRenderer(renderer, current => current.evaluate(`${q('.log-entry')}?.dataset.kind === 'ok'`));
+        check('linux-search-log-production-dom', await renderer.evaluate(
+          `${q('.log-entry .lroute')}.innerText.includes('Grok') && !${q('.lofficial')}`));
+        check('linux-search-log-details-click', await click('.log-entry .le-head'));
+        check('linux-search-log-unknown-cost-honest', await renderer.evaluate(`Boolean(${q('.log-entry .lu-unknown')})`));
+        const networkBeforeReplay = grokResponsesStub.requests.length;
+        check('linux-search-log-replay-click', await click('.log-entry [data-log-replay]'));
+        await waitForRenderer(renderer, current => current.evaluate(`!${q('#historyStage')}.hidden`));
+        check('linux-search-log-full-history-route', await renderer.evaluate(
+          `JSON.stringify([...${q('#historyRoute')}.querySelectorAll('.lnode')].map(e=>e.dataset.node)) === '["dsh","hub","grok"]'`));
+        await waitForRenderer(renderer, current => current.evaluate(`Boolean(${q('.hr-wires .packet')})`));
+        check('linux-search-log-packet-glow', await renderer.evaluate(`(() => {
+          const packet=${q('.hr-wires .packet')};
+          return packet.querySelector('.p-halo').getAttribute('r')==='7'
+            && packet.querySelector('.p-core').getAttribute('r')==='3.2';})()`));
+        await click('#historyStop');
+        await waitForRenderer(renderer, current => current.evaluate(`${q('#historyStage')}.hidden`));
+        check('linux-search-log-replay-no-request', grokResponsesStub.requests.length === networkBeforeReplay);
+        await click('#logPrivacy');
+        check('linux-search-log-privacy', await renderer.evaluate(`${q('.le-q')}.textContent === '搜索内容已隐藏'`));
+        await click('#logPrivacy');
+        await click('#logClear');
+        await waitForRenderer(renderer, current => current.evaluate(`${q('#logList')}.querySelectorAll('.log-entry').length===0`));
+        const clearedLease = await settingsCall('clearSearchLog', { sessionId: logLease });
+        check('linux-search-log-clear-rpc', clearedLease.ok === true && clearedLease.value.records.length === 0);
+        const closedLease = await settingsCall('closeSearchLog', { sessionId: logLease });
+        check('linux-search-log-close-rpc', closedLease.ok === true && closedLease.value.closed === true);
+        check('linux-search-log-no-renderer-exception', renderer.exceptions.length === 0);
         step('browser-settings-dom', {
           browser: '<BROWSER_EXECUTABLE>',
           href: detail.href,
@@ -2614,6 +2652,9 @@ async function linuxWorker(options) {
     });
 
     await browserSettingsDom();
+    // The new browser log check issued one extra search after the prior
+    // conversation baseline; subsequent stop assertions use this observed end.
+    grokRequestsAfterTakeover = grokResponsesStub.requests.length;
 
     if (options.case === 'full') {
       const originalText = readFileSync(grokConfigPath, 'utf8');

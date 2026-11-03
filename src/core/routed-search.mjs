@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { GrokSearchError } from './errors.mjs';
 import { createSearchExecutor } from './search-executor.mjs';
 import { mapSearchResult } from './result-map.mjs';
+import { createSearchLog } from './search-log.mjs';
 
 const CODE = /^[\w.-]{1,64}$/;
 const SOURCES = new Set(['grok', 'tavily', 'exa', 'tinyfish', 'firecrawl']);
@@ -21,7 +22,7 @@ const failureRows = list => (Array.isArray(list) ? list : []).slice(0, 8)
 export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBarrier,
   getConfig = () => ({}), budgetMs = 120_000, cleanupMs = 2_000, now = Date.now }) {
   let lastRoute = null;
-  const record = (origin, route) => { lastRoute = { at: now(), origin, ...route }; };
+  const searchLog = createSearchLog({ now });
   const fromSources = (result, grokCode) => ({ outcome: 'ok',
     served: SOURCES.has(result?.search_provider) ? result.search_provider : null,
     grokCode, fallbackUsed: true, failures: failureRows(result?.diagnostic?.failures) });
@@ -63,9 +64,15 @@ export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBar
   };
 
   async function dispatch(request, signal, origin, maxChars) {
+      const token = request.logToken;
+      const record = (origin, route) => {
+        lastRoute = { at: now(), origin, ...route };
+        if (token) token.route = { ...route, callsComplete: route.grokCode === 'DISABLED' };
+      };
+      const onCall = call => searchLog.call(token, call);
       if (preferences?.snapshot?.()?.value?.grokEnabled === false) {
         try {
-          const result = await sourceRouter.search({ ...request, signal, reason: 'grok-disabled' });
+          const result = await sourceRouter.search({ ...request, signal, reason: 'grok-disabled', onCall });
           signal?.throwIfAborted();
           const output = bounded(result, maxChars, request.maxResults);
           record(origin, fromSources(result, 'DISABLED'));
@@ -81,9 +88,13 @@ export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBar
         const result = await grok.search(request, signal);
         signal?.throwIfAborted();
         const output = bounded(result, maxChars, request.maxResults);
+        onCall({ provider: 'grok', result: result?.diagnostic?.fallbackUsed ? 'failed' : 'ok',
+          code: result?.diagnostic?.fallbackUsed ? result.diagnostic.fallbackReason : '' });
+        if (result?.diagnostic?.fallbackUsed) onCall({ provider: 'grok-sources', result: 'ok' });
         record(origin, fromGrok(result));
         return output;
       } catch (error) {
+        onCall({ provider: 'grok', result: signal?.aborted ? 'cancelled' : 'failed', code: codeOf(error) });
         // An uncertain owned-process exit is not an upstream failure. Keep the
         // error (and whenExited proof) intact so the outer executor holds its
         // faulted slot instead of hiding it behind an otherwise valid source.
@@ -101,7 +112,7 @@ export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBar
         throw primary;
       }
       try {
-        const result = await sourceRouter.search({ ...request, signal, reason: 'grok-unavailable' });
+        const result = await sourceRouter.search({ ...request, signal, reason: 'grok-unavailable', onCall });
         signal?.throwIfAborted();
         const output = bounded(result, maxChars, request.maxResults);
         record(origin, fromSources(result, codeOf(primary)));
@@ -128,12 +139,24 @@ export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBar
       ? grok.search(request, signal).then(result => ({ sources: result.sources, diagnostic: result.diagnostic ?? null }))
       : dispatch(request, signal, request.origin, maxChars),
   });
-  const search = (request, signal, origin = 'search') => tracked(() => executor.search({ ...request, origin }, signal));
+  const search = async (request, signal, origin = 'search') => {
+    const logToken = origin === 'search' ? searchLog.begin(request?.query) : null;
+    try {
+      const result = await tracked(() => executor.search({ ...request, origin, logToken }, signal));
+      searchLog.finish(logToken, logToken?.route);
+      return result;
+    }
+    catch (error) {
+      searchLog.finish(logToken, { ...logToken?.route, outcome: 'failed', served: null, code: codeOf(error),
+        cancelled: signal?.aborted || ['GROK_SEARCH_STOPPING', 'GROK_SEARCH_CANCELLED', 'GROK_CANCELLED'].includes(error?.code) });
+      throw error;
+    }
+  };
 
   // Diagnostics test the primary engine alone: no supplementary fallback, so a
   // failed Grok key is reported instead of being hidden by another source.
   const testGrok = (request, signal) => tracked(() => executor.search({ ...request, testPrimary: true }, signal));
 
-  return { search, testGrok, dispose: executor.dispose, snapshot: executor.snapshot,
+  return { search, testGrok, searchLog, dispose: async () => { searchLog.dispose(); return executor.dispose(); }, snapshot: executor.snapshot,
     routeSnapshot: () => lastRoute && structuredClone(lastRoute) };
 }
