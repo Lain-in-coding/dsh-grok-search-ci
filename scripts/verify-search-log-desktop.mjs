@@ -177,8 +177,9 @@ try {
     secrets.add(control.token);
     const extraction = inside(join(folder, 'tarball'));
     mkdirSync(extraction);
-    const extract = await commandResult('tar.exe', ['-xf', tarball, '-C', extraction], { timeoutMs: 30_000 });
-    assert.equal(extract.exitCode, 0);
+    const extract = await commandResult(process.platform === 'win32' ? 'tar.exe' : 'tar',
+      ['-xf', tarball, '-C', extraction], { timeoutMs: 30_000 });
+    assert.equal(extract.exitCode, 0, 'isolated candidate extraction must succeed');
     const product = inside(join(control.profile, 'node_modules/dsh-grok-search'));
     renameSync(inside(join(extraction, 'package')), product);
     for (const row of packageReceipt.files) assert.equal(sha256(join(product, row.path)), sha256(join(project, row.path)));

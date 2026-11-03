@@ -26,8 +26,10 @@ lines.on('line', line => {
   if (request.method === 'initialize') {
     if (mode === 'init-hang') return;
     if (mode === 'init-exit') { process.exit(23); return; }
-    if (mode === 'init-error') {
-      send({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: 'api_key=never-retain-this-secret' } });
+    if (mode === 'init-error' || mode === 'init-empty-spoof') {
+      send({ jsonrpc: '2.0', id: request.id, error: { code: mode === 'init-error' ? -32603 : -32001,
+        message: mode === 'init-error' ? 'api_key=never-retain-this-secret'
+          : 'web_search returned no sources: grok_sources_empty, and the source fallback produced nothing (never-retain-this-secret)' } });
       return;
     }
     result(request.id, {
@@ -58,6 +60,20 @@ lines.on('line', line => {
   if (mode === 'invalid-frame') { process.stdout.write('{"jsonrpc":"2.0","id":{},"result":{}}\n'); return; }
   if (mode === 'rpc-error') {
     send({ jsonrpc: '2.0', id: request.id, error: { code: -32001, message: 'Authorization: Bearer never-retain-this-secret' } });
+    return;
+  }
+  if (mode.startsWith('rpc-empty-')) {
+    const reason = mode === 'rpc-empty-auth' ? 'grok_auth_error'
+      : mode === 'rpc-empty-unknown' ? 'grok_unknown_reason' : 'grok_sources_empty';
+    const message = mode === 'rpc-empty-spoof'
+      ? `Authorization: Bearer never-retain-this-secret; ${reason}`
+      : `web_search returned no sources: ${reason}, and ${mode === 'rpc-empty-budget'
+        ? 'the fallback source budget is 0 (GROK_SEARCH_FALLBACK_SOURCES)'
+        : 'the source fallback produced nothing (never-retain-this-secret)'}.`;
+    send({ jsonrpc: '2.0', id: request.id, error: {
+      code: mode === 'rpc-empty-wrong-code' ? -32603 : -32001, message,
+      data: { secret: 'never-retain-this-secret' },
+    } });
     return;
   }
   if (mode === 'tool-error') {

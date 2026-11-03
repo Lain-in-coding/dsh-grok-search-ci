@@ -342,6 +342,16 @@ test('Grok diagnostic copy distinguishes missing citations from protocol and aut
   }
 });
 
+test('Grok empty-source RPC failure preserves the safe reason rather than blaming initialization', async () => {
+  const gateway = diagnosticGateway({ core: { testGrok: async () => {
+    throw new GrokSearchError('grok_sources_empty', 'Grok 未返回引用链接。');
+  } } });
+  const result = await gateway.diagnoseProvider({ provider: 'grok' });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.code, 'grok_sources_empty');
+  assert.equal(result.message, 'Grok 未返回引用链接。');
+});
+
 test('grok diagnosis is skipped when the primary engine is switched off', async () => {
   let called = false;
   const gateway = diagnosticGateway({

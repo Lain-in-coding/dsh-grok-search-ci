@@ -18,6 +18,24 @@ const SYSTEM_ENV = new Set([
 const GROK_ENV = /^(?:GROK_SEARCH_[A-Z0-9_]+|OPENAI_COMPATIBLE_(?:API_URL|API_KEY|MODEL)|GITHUB_TOKEN|(?:TAVILY|EXA|FIRECRAWL)_(?:API_KEY|API_URL|ENABLED)|TINYFISH_(?:API_KEY|SEARCH_API_URL|FETCH_API_URL|ENABLED))$/;
 const failure = (code, message) => new GrokSearchError(code, message);
 const safeLabel = value => typeof value === 'string' && /^[\w.+-]{1,80}$/.test(value) ? value : null;
+const EMPTY_SEARCH_REASONS = Object.freeze({
+  grok_auth_error: 'Grok 认证失败，请检查 API Key 或登录凭据。',
+  grok_timeout: 'Grok 响应超时。',
+  grok_parse_error: 'Grok 返回了无法解析的结果。',
+  grok_provider_error: 'Grok 接口调用失败，请检查接口协议、Base URL 和模型。',
+  grok_content_empty: 'Grok 未返回回答内容。',
+  grok_sources_empty: 'Grok 未返回引用链接。',
+});
+function classifyEmptySearch(error) {
+  // grok-search-rs 0.1.26 finalizes an empty fallback as Provider (-32001).
+  // Match only its fixed web_search envelope, then discard ALL remote text/data.
+  // Other RPCs, unknown reasons and arbitrary status/key text stay generic.
+  const reason = error?.code === -32001 && typeof error.message === 'string'
+    ? /^web_search returned no sources: (grok_[a-z_]+), and (?:the source fallback produced nothing \(|the fallback source budget is 0 \()/.exec(error.message)?.[1]
+    : null;
+  return reason && Object.hasOwn(EMPTY_SEARCH_REASONS, reason)
+    ? failure(reason, EMPTY_SEARCH_REASONS[reason]) : error;
+}
 
 // 继承模式只传系统、代理及已知上游变量；配置文件由子进程自行读取。
 export function executionEnvironment(overrides = {}, configPath) {
@@ -323,7 +341,13 @@ export async function runMcpSearch({
       if (!Object.hasOwn(client.getServerCapabilities() ?? {}, 'tools')) throw failure('GROK_SDK_UNSUPPORTED', 'Grok 未声明 MCP 工具能力。');
       result = { serverVersion, toolsDeclared: true };
     } else {
-    payload = decodeGrokResult(await race(client.callTool({ name: 'web_search', arguments: { query: request.query, response_format: 'concise' } }, options())));
+    try {
+      payload = decodeGrokResult(await race(client.callTool({ name: 'web_search', arguments: { query: request.query, response_format: 'concise' } }, options())));
+    } catch (caught) {
+      activeSignal.throwIfAborted();
+      if (transport.failure) throw transport.failure;
+      throw classifyEmptySearch(caught);
+    }
     budget();
     const total = payload.sources_count ?? payload.total_sources ?? payload.sources.length;
     const missing = total - payload.sources.length;
