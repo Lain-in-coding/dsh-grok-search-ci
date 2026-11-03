@@ -31,7 +31,7 @@ function classifyEmptySearch(error) {
   // Match only its fixed web_search envelope, then discard ALL remote text/data.
   // Other RPCs, unknown reasons and arbitrary status/key text stay generic.
   const reason = error?.code === -32001 && typeof error.message === 'string'
-    ? /^web_search returned no sources: (grok_[a-z_]+), and (?:the source fallback produced nothing \(|the fallback source budget is 0 \()/.exec(error.message)?.[1]
+    ? /^provider error: web_search returned no sources: (grok_[a-z_]+), and (?:the source fallback produced nothing \(|the fallback source budget is 0 \()/.exec(error.message)?.[1]
     : null;
   return reason && Object.hasOwn(EMPTY_SEARCH_REASONS, reason)
     ? failure(reason, EMPTY_SEARCH_REASONS[reason]) : error;

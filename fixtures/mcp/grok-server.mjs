@@ -29,7 +29,7 @@ lines.on('line', line => {
     if (mode === 'init-error' || mode === 'init-empty-spoof') {
       send({ jsonrpc: '2.0', id: request.id, error: { code: mode === 'init-error' ? -32603 : -32001,
         message: mode === 'init-error' ? 'api_key=never-retain-this-secret'
-          : 'web_search returned no sources: grok_sources_empty, and the source fallback produced nothing (never-retain-this-secret)' } });
+          : 'provider error: web_search returned no sources: grok_sources_empty, and the source fallback produced nothing (never-retain-this-secret)' } });
       return;
     }
     result(request.id, {
@@ -67,7 +67,7 @@ lines.on('line', line => {
       : mode === 'rpc-empty-unknown' ? 'grok_unknown_reason' : 'grok_sources_empty';
     const message = mode === 'rpc-empty-spoof'
       ? `Authorization: Bearer never-retain-this-secret; ${reason}`
-      : `web_search returned no sources: ${reason}, and ${mode === 'rpc-empty-budget'
+      : `${mode === 'rpc-empty-no-prefix' ? '' : 'provider error: '}web_search returned no sources: ${reason}, and ${mode === 'rpc-empty-budget'
         ? 'the fallback source budget is 0 (GROK_SEARCH_FALLBACK_SOURCES)'
         : 'the source fallback produced nothing (never-retain-this-secret)'}.`;
     send({ jsonrpc: '2.0', id: request.id, error: {

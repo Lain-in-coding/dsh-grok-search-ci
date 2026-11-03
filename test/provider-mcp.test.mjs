@@ -68,6 +68,7 @@ for (const [mode, code] of [
   ['rpc-empty-sources', 'grok_sources_empty'], ['rpc-empty-budget', 'grok_sources_empty'],
   ['rpc-empty-auth', 'grok_auth_error'], ['rpc-empty-unknown', 'GROK_MCP_ERROR'],
   ['rpc-empty-spoof', 'GROK_MCP_ERROR'], ['rpc-empty-wrong-code', 'GROK_MCP_ERROR'],
+  ['rpc-empty-no-prefix', 'GROK_MCP_ERROR'],
   ['malformed-result', 'GROK_INVALID_RESULT'], ['init-exit', 'GROK_CHILD_EXIT'], ['call-exit', 'GROK_CHILD_EXIT'],
   ['stdout-limit', 'GROK_STDOUT_LIMIT'], ['invalid-frame', 'GROK_PROTOCOL_ERROR'], ['invalid-json', 'GROK_PROTOCOL_ERROR'],
 ]) {

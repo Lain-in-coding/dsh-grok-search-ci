@@ -179,7 +179,7 @@ try {
     await assert.rejects(provider.provider.search({ query: 'after-dispose' }), error => error.code === 'GROK_SEARCH_STOPPING');
   });
   if (grokExecutable) await check('real-grok-binary-reuses-one-process-with-local-upstream', async () => {
-    let requests = 0;
+    let requests = 0, omitSources = false;
     const server = createServer((request, response) => {
       request.resume();
       request.on('end', () => {
@@ -191,7 +191,7 @@ try {
         response.end(JSON.stringify({ id: 'offline-' + requests, object: 'response', status: 'completed',
           output_text: 'Real Grok local probe.',
           output: [
-            { type: 'web_search_call', action: { sources: [{ url: 'https://example.invalid/offline', title: 'Offline source' }] } },
+            { type: 'web_search_call', action: { sources: omitSources ? [] : [{ url: 'https://example.invalid/offline', title: 'Offline source' }] } },
             { type: 'message', content: [{ type: 'output_text', text: 'Real Grok local probe.' }] },
           ] }));
       });
@@ -218,13 +218,27 @@ try {
       assert.equal(new Set(pids).size, 1);
       assert.equal(requests, 4);
       assert.equal(version, '0.1.26');
+      omitSources = true;
+      await assert.rejects(session.run({ ...base, executable: grokExecutable, executableArgs: [],
+        configPath: binaryConfig, request: { query: 'Offline missing citations unique query' }, remainingMs: () => 10_000 }),
+      error => error.code === 'grok_sources_empty' && error.message === 'Grok 未返回引用链接。'
+        && error.diagnostic.exited === true);
+      assert.equal(alive(pids[0]), false, 'failed empty-source MCP session is reaped');
+      omitSources = false;
+      const recovered = await session.run({ ...base, executable: grokExecutable, executableArgs: [],
+        configPath: binaryConfig, request: { query: 'Offline recovered citations unique query' }, remainingMs: () => 10_000 });
+      assert.equal(recovered.sources[0].url, 'https://example.invalid/offline');
+      assert.notEqual(recovered.diagnostic.childPid, pids[0]);
+      pids.push(recovered.diagnostic.childPid);
+      assert.equal(requests, 6);
     } finally {
       await session.dispose();
       server.closeAllConnections();
       await new Promise(resolveClose => server.close(resolveClose));
     }
     assert.equal(alive(pids[0]), false);
-    return { version, upstreamRequests: requests, uniqueProcesses: new Set(pids).size, binarySha256: sha256(grokExecutable) };
+    return { version, upstreamRequests: requests, uniqueProcesses: new Set(pids).size,
+      emptySourceReasonValidated: true, reconnectedAfterError: true, binarySha256: sha256(grokExecutable) };
   });
 } catch (error) { fatal = { code: error.code ?? null, message: error.message }; }
 const sources = ['src/core/session-owner.mjs', 'src/core/mcp-search.mjs', 'src/core/search-executor.mjs',
