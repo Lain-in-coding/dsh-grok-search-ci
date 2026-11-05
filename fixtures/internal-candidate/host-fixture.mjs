@@ -40,7 +40,9 @@ export function applyModel(ctx) {
         } }
           : mode === 'fetch' ? { name: 'web_fetch', args: { url: 'https://example.invalid/fetch' } }
             : mode === 'echo' ? { name: 'candidate_echo', args: {} }
-              : { name: 'web_search', args: { queries: [state.searchQuery ?? question ?? '内部候选离线查询'] } };
+              : { name: 'web_search', args: { queries: !manual && command === 'search batch'
+                ? ['内部候选实时查询', '内部候选逐小时查询']
+                : [state.searchQuery ?? question ?? '内部候选离线查询'] } };
       yield { type: 'tool-call-delta', index: 0, id: randomUUID(), name: tool.name, argumentsDelta: JSON.stringify(tool.args) };
       yield { type: 'finish', reason: { kind: 'tool-calls' } };
     }

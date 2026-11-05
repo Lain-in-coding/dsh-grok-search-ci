@@ -34,7 +34,16 @@ jobs:
     timeout-minutes: 10
     env:
       EXPECTED_TARBALL_SHA256: ${{ inputs.expected_tarball_sha256 }}
+      FIRST_USE_ONLY: ${{ inputs.first_use_only }}
+      SEARCH_LOG_ONLY: ${{ inputs.search_log_only }}
     steps:
+      - name: Reject mutually exclusive gate selections
+        shell: pwsh
+        run: |
+          # Both flags together skip every macOS gate, which would report a green run without evidence.
+          if ($env:FIRST_USE_ONLY -eq 'true' -and $env:SEARCH_LOG_ONLY -eq 'true') {
+            throw 'first_use_only and search_log_only cannot both be true.'
+          }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -283,7 +292,7 @@ jobs:
           set -euo pipefail
           TARBALL="$(find "$RUNNER_TEMP/release" -name 'dsh-grok-search-*.tgz' -print -quit)"
           DSH_LOG_GROK_PROGRAM="$RUNNER_TEMP/grok/grok-search-rs" \
-            node scripts/verify-search-log-desktop.mjs "$TARBALL" \
+            node scripts/verify-search-log-desktop.mjs --editable-config "$TARBALL" \
             "$RUNNER_TEMP/dsh-rc3/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
             "$RUNNER_TEMP/dsh-rc5/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
       - name: Preserve macOS evidence

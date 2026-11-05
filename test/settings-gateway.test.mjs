@@ -8,6 +8,7 @@ import { apply as applySettings, SETTINGS_DESCRIPTORS } from '../src/settings-ui
 import { GrokSearchError } from '../src/core/errors.mjs';
 import { createConnectionSecurity } from '../src/core/connection-security.mjs';
 import { createSearchLog } from '../src/core/search-log.mjs';
+import { createToolRouteContext } from '../src/core/tool-route-context.mjs';
 
 test('settings gateway reads shared config, saves with CAS and keeps secrets out of snapshot', async () => {
   let Gateway;
@@ -143,6 +144,26 @@ test('search history uses separate secure owner RPCs; ordinary snapshot stays re
   assert.deepEqual(await gateway.readSearchLog({ sessionId: id }), { records: [] });
   await gateway.closeSearchLog({ sessionId: id });
   log.dispose();
+});
+
+test('chat route RPC requires owner and exact session/call identity without exposing search text', async () => {
+  const routes = createToolRouteContext(), sessionId = randomUUID();
+  await routes.run({ name: 'web_search', callId: 'native-call', agent: { session: { id: sessionId } } }, async () => {
+    routes.capture().finish({ outcome: 'ok', served: 'tavily', grokCode: 'DISABLED', fallbackUsed: true });
+  });
+  const { gateway } = viewGateway();
+  gateway.callRoutes = routes;
+  const value = await gateway.toolCallRoute({ sessionId, callId: 'native-call' });
+  const descriptor = SETTINGS_DESCRIPTORS.find(row => row.method === 'toolCallRoute');
+  assert.deepEqual(descriptor.result.create().parse(value), value);
+  assert.equal(value.known, true);
+  assert.equal(value.routes[0].served, 'tavily');
+  assert.equal(value.routes[0].fallbackUsed, false);
+  assert.equal((await gateway.toolCallRoute({ sessionId: randomUUID(), callId: 'native-call' })).known, false);
+  assert.equal((await gateway.toolCallRoute({ sessionId, callId: 'other' })).known, false);
+  gateway.security = { requireOwner() { throw new GrokSearchError('SETTINGS_AUTH_REQUIRED', 'Denied'); } };
+  await assert.rejects(gateway.toolCallRoute({ sessionId, callId: 'native-call' }), { code: 'SETTINGS_AUTH_REQUIRED' });
+  routes.dispose();
 });
 
 test('private data RPCs require actual connection security even if the client claims otherwise', async () => {
@@ -446,11 +467,26 @@ const withoutConfigEnv = async work => {
   for (const name of names) delete process.env[name];
   try { return await work(); } finally { for (const [name, value] of saved) process.env[name] = value; }
 };
+const withIsolatedHome = async work => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-isolated-home-'));
+  const pattern = /^(HOME|USERPROFILE|GROK_SEARCH_.*|TAVILY_.*|EXA_.*|TINYFISH_.*|FIRECRAWL_.*|OPENAI_COMPATIBLE_.*|GITHUB_TOKEN)$/i;
+  const saved = Object.entries(process.env).filter(([name]) => pattern.test(name));
+  for (const [name] of saved) delete process.env[name];
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try { return await work(home); }
+  finally {
+    delete process.env.HOME;
+    delete process.env.USERPROFILE;
+    for (const [name, value] of saved) process.env[name] = value;
+  }
+};
 const snapshotCodec = () => SETTINGS_DESCRIPTORS.find(row => row.method === 'snapshot').result.create();
 
-test('snapshot carries the last route and plugin facts through the strict codec', async () => withoutConfigEnv(async () => {
+test('snapshot carries the last route and plugin facts through the strict codec', async () => withIsolatedHome(async home => {
   const route = { at: 1, origin: 'search', outcome: 'ok', served: 'tavily', grokCode: 'grok_auth_error',
-    fallbackUsed: true, failures: [{ provider: 'exa', code: 'HTTP_401' }] };
+    fallbackUsed: true, failures: [{ provider: 'exa', code: 'HTTP_401' }],
+    resultProviders: ['tavily'], resultProvidersComplete: true, provenance: 'source-label' };
   const { gateway, path } = viewGateway({ core: { routeSnapshot: () => route, budgetMs: 90_000 } });
   writeFileSync(path, 'grok_api_key = "secret-value"\nsource_providers = ["exa"]\n');
   const snapshot = await gateway.snapshot();
@@ -470,6 +506,7 @@ test('snapshot carries the last route and plugin facts through the strict codec'
   const empty = await bare.gateway.snapshot();
   assert.equal(empty.route, null);
   assert.equal(empty.program, null);
+  assert.equal(empty.config.path, join(home, '.config/grok-search-rs/config.toml'));
   assert.deepEqual(empty.plugin, { budgetMs: null, programConfigured: false, configSource: 'default' });
   assert.deepEqual(snapshotCodec().parse(empty), empty);
 }));

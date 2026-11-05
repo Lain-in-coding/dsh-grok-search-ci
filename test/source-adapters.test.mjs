@@ -215,6 +215,36 @@ test('fallback results are capped by fallback_sources and keep provider metadata
   assert.deepEqual(result.diagnostic.failures, [{ provider: 'tavily', code: 'HTTP_401', httpStatus: 401, message: 'API Key 无效或已失效。' }]);
 });
 
+test('fallback_sources 0 sends no supplementary request; missing or invalid values still mean 5', async () => {
+  const onlyTavily = without(baseConfig(), 'exa', 'firecrawl');
+  const noKey = router({ config: { ...onlyTavily, tavily_api_key: '', fallback_sources: 0 },
+    fetchImpl: async () => json({}) });
+  await assert.rejects(noKey.instance.search({ query: 'q' }), { code: 'FALLBACK_SOURCES_ZERO' });
+  assert.equal(noKey.calls.length, 0);
+  const zero = router({ config: { ...onlyTavily, fallback_sources: 0 },
+    fetchImpl: async () => json({ results: [{ url: 'https://unexpected.example' }] }) });
+  await assert.rejects(zero.instance.search({ query: 'q', maxResults: 3 }), error => {
+    assert.equal(error.code, 'FALLBACK_SOURCES_ZERO');
+    assert.match(error.message, /fallback_sources/);
+    assert.doesNotMatch(error.message, /https?:|tvly-key/);
+    return true;
+  });
+  assert.equal(zero.calls.length, 0);
+  // Diagnostics are explicit user tests with their own fixed limit.
+  assert.equal((await zero.instance.diagnoseProvider('tavily')).status, 'ok');
+  assert.equal(zero.calls.length, 1);
+  assert.equal((await zero.instance.diagnose()).find(row => row.provider === 'tavily').status, 'ok');
+  assert.equal(zero.calls.length, 2);
+  for (const fallbackSources of [undefined, -1, 2.5, '3', Number.MAX_SAFE_INTEGER + 1]) {
+    const { instance, calls } = router({ config: { ...onlyTavily, fallback_sources: fallbackSources },
+      fetchImpl: async () => json({ results: [{ url: 'https://served.example' }] }) });
+    const result = await instance.search({ query: 'q', maxResults: 10 });
+    assert.equal(result.search_provider, 'tavily');
+    assert.equal(calls.length, 1);
+    assert.equal(JSON.parse(calls[0].init.body).max_results, 5, String(fallbackSources));
+  }
+});
+
 test('fallback serializes within shared character budget without routing metadata consuming it', async () => {
   const { instance } = router({ config: { ...baseConfig(), response_max_chars: 500 },
     fetchImpl: async () => json({ results: [{ url: 'https://a.test', title: 'x'.repeat(200),

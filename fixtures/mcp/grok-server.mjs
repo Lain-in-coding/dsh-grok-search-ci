@@ -94,6 +94,13 @@ lines.on('line', line => {
     fallback_used: mode === 'fallback',
     truncated: mode === 'fallback',
   };
+  if (mode.startsWith('attribution-')) {
+    const provider = mode.slice('attribution-'.length);
+    payload.search_provider = 'source_fallback';
+    payload.fallback_used = true;
+    payload.fallback_reason = 'grok_sources_empty';
+    payload.sources = [{ ...payload.sources[0], provider: `${provider}_fallback` }];
+  }
   if (mode === 'stderr') process.stderr.write('api_key=never-retain-this-secret\n'.repeat(10_000));
   if (mode === 'malformed-result') payload.sources = 'not-an-array';
   answered = true;

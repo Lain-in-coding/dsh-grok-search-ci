@@ -2330,12 +2330,22 @@ async function linuxWorker(options) {
         // only the HTTP model response is supplied by the existing loopback stub.
         await waitForRenderer(renderer, current => current.evaluate(`Boolean(${q('#logCard')})`));
         await delay(2800);
+        // History is plugin-owned for the enabled lifetime: earlier searches stay
+        // visible to a new view, so the new record is identified by its id.
         const logLease = crypto.randomUUID();
         const logRead = await settingsCall('readSearchLog', { sessionId: logLease });
-        check('linux-search-log-authenticated-opt-in', logRead.ok === true && logRead.value.records.length === 0);
+        check('linux-search-log-authenticated-history', logRead.ok === true && Array.isArray(logRead.value.records)
+          && logRead.value.records.every(record => record.kind !== 'running'));
+        const previousLogId = logRead.ok ? logRead.value.records[0]?.id ?? null : null;
         const loggedAnswer = await probe('product-query-result');
         check('linux-search-log-real-provider-result', loggedAnswer.sources.length > 0);
-        await waitForRenderer(renderer, current => current.evaluate(`${q('.log-entry')}?.dataset.kind === 'ok'`));
+        const loggedRecord = await waitFor(async () => {
+          const state = await settingsCall('readSearchLog', { sessionId: logLease });
+          const latest = state.ok ? state.value.records[0] : null;
+          return latest && latest.id !== previousLogId && latest.kind === 'ok' ? latest : null;
+        }, 15000, 'new search log record');
+        await waitForRenderer(renderer, current => current.evaluate(`${q('.log-entry')}?.dataset.parentId === ${JSON.stringify(loggedRecord.id)}
+          && ${q('.log-entry')}?.dataset.kind === 'ok'`));
         check('linux-search-log-production-dom', await renderer.evaluate(
           `${q('.log-entry .lroute')}.innerText.includes('Grok') && !${q('.lofficial')}`));
         check('linux-search-log-details-click', await click('.log-entry .le-head'));
@@ -2354,7 +2364,7 @@ async function linuxWorker(options) {
         await waitForRenderer(renderer, current => current.evaluate(`${q('#historyStage')}.hidden`));
         check('linux-search-log-replay-no-request', grokResponsesStub.requests.length === networkBeforeReplay);
         await click('#logPrivacy');
-        check('linux-search-log-privacy', await renderer.evaluate(`${q('.le-q')}.textContent === '搜索内容已隐藏'`));
+        check('linux-search-log-privacy', await renderer.evaluate(`${q('.le-query')}?.textContent === '搜索内容已隐藏'`));
         await click('#logPrivacy');
         await click('#logClear');
         await waitForRenderer(renderer, current => current.evaluate(`${q('#logList')}.querySelectorAll('.log-entry').length===0`));

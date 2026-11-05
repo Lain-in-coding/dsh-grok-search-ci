@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { GrokSearchError } from './errors.mjs';
 import { createSearchExecutor } from './search-executor.mjs';
-import { mapSearchResult } from './result-map.mjs';
+import { mapSearchResult, searchSourceProvenance } from './result-map.mjs';
 import { createSearchLog } from './search-log.mjs';
 
 const CODE = /^[\w.-]{1,64}$/;
@@ -19,21 +19,33 @@ const failureRows = list => (Array.isArray(list) ? list : []).slice(0, 8)
  * only stable codes and provider ids: never the query, results, URLs, keys or
  * upstream text.
  */
-export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBarrier,
+export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBarrier, searchLog: suppliedLog,
   getConfig = () => ({}), budgetMs = 120_000, cleanupMs = 2_000, now = Date.now }) {
   let lastRoute = null;
-  const searchLog = createSearchLog({ now });
+  const searchLog = suppliedLog ?? createSearchLog({ now });
   const fromSources = (result, grokCode) => ({ outcome: 'ok',
     served: SOURCES.has(result?.search_provider) ? result.search_provider : null,
     grokCode, fallbackUsed: true, failures: failureRows(result?.diagnostic?.failures) });
   // grok-search-rs can itself answer from its source chain when Grok fails.
   const fromGrok = result => {
     const diagnostic = result?.diagnostic ?? {};
+    const provenance = searchSourceProvenance(result.sources);
+    const hasProvenance = diagnostic.sourceProvenance !== undefined || provenance.resultProviders.length > 0;
+    const details = hasProvenance ? {
+      resultProviders: provenance.resultProviders,
+      resultProvidersComplete: provenance.resultProvidersComplete,
+      provenance: 'source-label',
+    } : {};
+    const fallback = provenance.fallbackProviders;
+    // The top-level "source_fallback" is not a supplier. The exact per-source
+    // *_fallback labels identify suppliers of retained results, not attempts.
+    const served = fallback.length === 1 ? fallback[0] : provenance.resultProviders.length === 1
+      && provenance.resultProviders[0] === 'grok' && provenance.resultProvidersComplete ? 'grok' : 'grok-sources';
     return diagnostic.fallbackUsed === true
-      ? { outcome: 'ok', served: 'grok-sources', fallbackUsed: true, failures: [],
+      ? { outcome: 'ok', served, fallbackUsed: true, failures: [], ...details,
         grokCode: typeof diagnostic.fallbackReason === 'string' && CODE.test(diagnostic.fallbackReason)
           ? diagnostic.fallbackReason : 'grok_provider_error' }
-      : { outcome: 'ok', served: 'grok', grokCode: null, fallbackUsed: false, failures: [] };
+      : { outcome: 'ok', served: 'grok', grokCode: null, fallbackUsed: false, failures: [], ...details };
   };
   const tracked = async work => {
     const operationId = randomUUID();
@@ -88,10 +100,16 @@ export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBar
         const result = await grok.search(request, signal);
         signal?.throwIfAborted();
         const output = bounded(result, maxChars, request.maxResults);
-        onCall({ provider: 'grok', result: result?.diagnostic?.fallbackUsed ? 'failed' : 'ok',
-          code: result?.diagnostic?.fallbackUsed ? result.diagnostic.fallbackReason : '' });
-        if (result?.diagnostic?.fallbackUsed) onCall({ provider: 'grok-sources', result: 'ok' });
-        record(origin, fromGrok(result));
+        const route = fromGrok(output);
+        onCall({ provider: 'grok', result: route.fallbackUsed ? 'failed' : 'ok',
+          code: route.fallbackUsed ? route.grokCode : '' });
+        for (const provider of route.resultProviders || []) {
+          if (provider !== 'grok') onCall({ provider, operation: 'supplement', result: 'ok', evidence: 'source-label' });
+        }
+        if (route.fallbackUsed && (!route.resultProviders || !route.resultProvidersComplete)) {
+          onCall({ provider: 'grok-sources', result: 'ok', evidence: 'source-label' });
+        }
+        record(origin, route);
         return output;
       } catch (error) {
         onCall({ provider: 'grok', result: signal?.aborted ? 'cancelled' : 'failed', code: codeOf(error) });
@@ -118,6 +136,14 @@ export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBar
         record(origin, fromSources(result, codeOf(primary)));
         return output;
       } catch (fallbackError) {
+        // A zero fallback budget is not a source failure: nothing was sent, so
+        // the Grok failure itself remains the outcome, as with no source at all.
+        if (fallbackError?.code === 'FALLBACK_SOURCES_ZERO' && !signal?.aborted) {
+          record(origin, { outcome: 'failed', served: null, grokCode: codeOf(primary), fallbackUsed: false,
+            failures: [], code: codeOf(primary) });
+          throw primary instanceof GrokSearchError ? primary
+            : new GrokSearchError('GROK_SEARCH_FAILED', 'Grok 查询失败，请检查程序和配置。');
+        }
         // Keep the primary failure next to the per-source codes; both are
         // fixed, secret-free messages produced by this plugin.
         if (fallbackError?.code === 'SOURCE_ALL_FAILED' && Array.isArray(fallbackError.details?.failures)) {
@@ -139,16 +165,22 @@ export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBar
       ? grok.search(request, signal).then(result => ({ sources: result.sources, diagnostic: result.diagnostic ?? null }))
       : dispatch(request, signal, request.origin, maxChars),
   });
-  const search = async (request, signal, origin = 'search') => {
-    const logToken = origin === 'search' ? searchLog.begin(request?.query) : null;
+  const search = async (request, signal, origin = 'search', attribution = null) => {
+    const logToken = origin === 'search' && !attribution?.suppressed ? searchLog.begin(request?.query, attribution) : null;
+    // Route evidence belongs to this invocation even when its history was
+    // cleared/evicted. Never fall back to the mutable lastRoute snapshot.
+    const routeToken = logToken ?? {};
     try {
-      const result = await tracked(() => executor.search({ ...request, origin, logToken }, signal));
-      searchLog.finish(logToken, logToken?.route);
+      const result = await tracked(() => executor.search({ ...request, origin, logToken: routeToken }, signal));
+      searchLog.finish(logToken, routeToken.route);
+      attribution?.finish(routeToken.route);
       return result;
     }
     catch (error) {
-      searchLog.finish(logToken, { ...logToken?.route, outcome: 'failed', served: null, code: codeOf(error),
-        cancelled: signal?.aborted || ['GROK_SEARCH_STOPPING', 'GROK_SEARCH_CANCELLED', 'GROK_CANCELLED'].includes(error?.code) });
+      const failure = { ...routeToken.route, outcome: 'failed', served: null, code: codeOf(error),
+        cancelled: signal?.aborted || ['GROK_SEARCH_STOPPING', 'GROK_SEARCH_CANCELLED', 'GROK_CANCELLED'].includes(error?.code) };
+      searchLog.finish(logToken, failure);
+      attribution?.finish(failure);
       throw error;
     }
   };
@@ -157,6 +189,6 @@ export function createRoutedSearch({ grok, sourceRouter, preferences, releaseBar
   // failed Grok key is reported instead of being hidden by another source.
   const testGrok = (request, signal) => tracked(() => executor.search({ ...request, testPrimary: true }, signal));
 
-  return { search, testGrok, searchLog, dispose: async () => { searchLog.dispose(); return executor.dispose(); }, snapshot: executor.snapshot,
+  return { search, testGrok, searchLog, dispose: async () => { if (!suppliedLog) searchLog.dispose(); return executor.dispose(); }, snapshot: executor.snapshot,
     routeSnapshot: () => lastRoute && structuredClone(lastRoute) };
 }

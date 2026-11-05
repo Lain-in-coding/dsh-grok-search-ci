@@ -349,6 +349,12 @@ export function createSourceRouter({ getConfig, getPreferences, fetchImpl = glob
         && (!Number.isSafeInteger(config.response_max_chars) || config.response_max_chars < 100)) {
         throw new GrokSearchError('GROK_CONFIG_INVALID', '回复字符上限至少需要 100 字符，请检查共享配置。');
       }
+      // Same budget as grok-search-rs: an explicit 0 means no fallback results,
+      // so nothing is sent; only a missing or invalid value means the default 5.
+      if (config.fallback_sources === 0) {
+        throw new GrokSearchError('FALLBACK_SOURCES_ZERO',
+          '回退来源数（fallback_sources）为 0，未调用补充来源；如需回退，请在 Grok Search RS 设置中调大该值。');
+      }
       const available = sources.filter(source => source.state === 'available');
       if (!available.length) {
         throw new GrokSearchError('SOURCE_NOT_CONFIGURED', '没有已开启且填写了 API Key 的补充来源。');

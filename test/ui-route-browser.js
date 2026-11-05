@@ -25,6 +25,62 @@ async page => {
   try {
     await page.setViewportSize({ width: 1440, height: 1000 });
     await state('returning');
+    const projectLink = page.locator('[data-dsg-project] a');
+    const projectTip = page.locator('[data-dsg-project] [role=tooltip]');
+    check('one title project badge', await page.locator('[data-dsg-project]').count(), 1);
+    check('project badge follows version', await page.locator('.version-tag + #project-badge [data-dsg-project]').count(), 1);
+    check('project badge accessible label', await projectLink.getAttribute('aria-label'),
+      '打开 dsh-grok-search 的 GitHub 项目首页（新窗口）');
+    check('project icon and hit area stay compact', await projectLink.evaluate(link => {
+      const icon = link.querySelector('img'), a = link.getBoundingClientRect(), i = icon.getBoundingClientRect();
+      return [a.width, a.height, i.width, i.height];
+    }), [24, 24, 16, 16]);
+    await projectLink.hover();
+    await projectTip.waitFor({ state: 'visible' });
+    check('project hover tooltip', await projectTip.textContent(), '用着还行？给个star');
+    await page.keyboard.press('Escape');
+    await projectTip.waitFor({ state: 'hidden' });
+    await page.locator('#outside').focus();
+    await page.keyboard.press('Shift+Tab');
+    check('project link reachable by keyboard', await projectLink.evaluate(link => link.matches(':focus-visible')));
+    await projectTip.waitFor({ state: 'visible' });
+    check('project focus tooltip', await projectTip.textContent(), '用着还行？给个star');
+    const linkBefore = await projectLink.getAttribute('href'), originalPage = page.url();
+    await page.context().route('https://github.com/Lain-in-coding/dsh-grok-search', route =>
+      route.fulfill({ status: 200, contentType: 'text/html', body: '<title>Project navigation test</title>' }));
+    const opened = page.waitForEvent('popup');
+    await projectLink.press('Enter');
+    const popup = await opened;
+    await popup.waitForURL('https://github.com/Lain-in-coding/dsh-grok-search');
+    await popup.waitForLoadState('domcontentloaded');
+    check('project link opens exact homepage', popup.url(), 'https://github.com/Lain-in-coding/dsh-grok-search');
+    check('project navigation has no opener', await popup.evaluate(() => window.opener === null));
+    check('project navigation preserves settings page', page.url(), originalPage);
+    check('project href stays fixed', linkBefore, popup.url());
+    await popup.close();
+    // Returning from a noopener popup must not leave the animation suite background-throttled.
+    await page.bringToFront();
+    const focus = await page.context().newCDPSession(page);
+    await focus.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    await focus.detach();
+    await page.context().unroute('https://github.com/Lain-in-coding/dsh-grok-search');
+    const lightLogo = await projectLink.locator('img').getAttribute('src');
+    await page.evaluate(() => window.harness.theme('dark'));
+    check('project icon adapts to explicit dark theme', await projectLink.locator('img').getAttribute('src') !== lightLogo);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    check('project icon respects reduced motion', await projectLink.locator('img').evaluate(img =>
+      getComputedStyle(img).transitionDuration), '0s');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.evaluate(() => {
+      window.harness.theme('light');
+      window.harness.subject({ kind: 'bundle', pkg: { name: 'another-plugin' } });
+    });
+    check('project badge absent on other plugin details', await page.locator('[data-dsg-project]').count(), 0);
+    await page.evaluate(() => window.harness.subject({ kind: 'bundle', pkg: { name: 'dsh-grok-search' } }));
+    await page.evaluate(() => window.harness.remount());
+    check('project badge survives remount without duplicates', await page.locator('[data-dsg-project] a').count(), 1);
+    check('project badge keeps one host across remount and StrictMode replay', await page.locator('[data-dsg-project]').count(), 1);
+    check('project badge replay keeps one tooltip', await page.locator('[data-dsg-project] [role=tooltip]').count(), 1);
     check('six provider rows', await page.locator('.row[data-id]').count(), 6);
     check('one layer host', await page.locator('[data-dsg-layer]').count(), 1);
     check('no global route IDs', await read(() => document.querySelector('#routeCard')), null);
@@ -119,8 +175,12 @@ async page => {
 
     await state('fresh');
     await card('grok');
-    check('protocols have concise transport-only names', await page.locator('.seg button').allTextContents(),
-      ['Responses 接口', 'Chat Completions 接口']);
+    check('protocol selectors use the approved familiar names', await page.locator('.seg button').allTextContents(),
+      ['xAI Responses', 'OpenAI 兼容网关']);
+    check('Responses title explains transport without excluding custom services', await page.locator('[data-a=mode][data-v=responses]').getAttribute('title'),
+      'Responses 接口；支持兼容此协议的自定义服务');
+    check('gateway title identifies Chat Completions', await page.locator('[data-a=mode][data-v=compat]').getAttribute('title'),
+      'Chat Completions 接口');
     check('Responses placeholder includes official and third-party key examples', await page.locator('input[data-k=key]').getAttribute('placeholder'),
       'xai-.../sk-...');
     check('Responses does not imply official-only routing', await page.locator('.dlg-form').textContent().then(text => text.includes('直连 xAI 官方接口')), false);
@@ -148,6 +208,24 @@ async page => {
     check('environment key explicit reveal allowed', await page.locator('[data-a=eye][data-k=key]').isEnabled());
     await page.locator('[data-a=eye][data-k=key]').click();
     check('environment key remains read only', (await page.locator('input[data-k=key]').getAttribute('readonly')) !== null);
+    check('locked key explains the environment source', await page.locator('label[for=f-key]').textContent().then(text => text.includes('环境变量')));
+    await close();
+    await page.evaluate(() => window.harness.environment({}));
+    await refresh();
+    await card('exa');
+    await page.locator('[data-a=eye][data-k=key]').click();
+    check('file-backed existing key is editable after removing test injection', await page.locator('input[data-k=key]').isEditable());
+    await page.locator('input[data-k=key]').fill('exa-replaced-after-unlock');
+    await save();
+    await page.evaluate(() => window.harness.remount());
+    await page.locator('#routeCard:not([data-s=load])').waitFor();
+    await card('exa');
+    await page.locator('[data-a=eye][data-k=key]').click();
+    check('replacement key remains editable after settings remount', await page.locator('input[data-k=key]').isEditable());
+    check('remount reads the last saved key', await page.locator('input[data-k=key]').inputValue(), 'exa-replaced-after-unlock');
+    await close();
+    await card('grok');
+    check('file-backed Grok key permits both protocols', await page.locator('.seg button:disabled').count(), 0);
     await close();
 
     await page.evaluate(() => window.harness.configure({ capabilities: { secretsAllowed: false, transport: 'restricted', reason: '远程 HTTP' } }));
@@ -159,8 +237,25 @@ async page => {
     check('restricted connection disables key additions', await page.locator('[data-a=add-key]').isDisabled());
     check('restricted connection locks credential destination URL', await page.locator('input[data-k=url]').getAttribute('readonly') !== null);
     await close();
+    check('restricted log explains the secure-connection requirement', await page.locator('#logNote').textContent(), '请通过本机直连或 HTTPS 查看搜索日志');
+    check('restricted log is not announced as a user clear', await page.locator('#logAnnouncer').textContent() !== '已清空本次会话的搜索记录。');
+    check('restricted log polling stays silent', await read(() => new Promise(resolve => {
+      const root = document.querySelector('[data-dsg-route]').shadowRoot;
+      let changes = 0;
+      const observer = new MutationObserver(records => { changes += records.length; });
+      observer.observe(root.querySelector('#logAnnouncer'), { childList: true, characterData: true, subtree: true });
+      setTimeout(() => { observer.disconnect(); resolve(changes); }, 2700);
+    })), 0);
 
     await state('returning');
+    // Before the first snapshot the connection is unknown, not restricted.
+    await page.evaluate(() => { window.harness.configure({ delay: 4000 }); window.harness.remount(); });
+    check('log before first snapshot waits without a restricted verdict', await read(() => new Promise(resolve => setTimeout(() => {
+      const root = document.querySelector('[data-dsg-route]').shadowRoot;
+      resolve([root.querySelector('#logNote').textContent, root.querySelector('#logAnnouncer').textContent]);
+    }, 2700))), ['仅内存 · 最近 20 条 · 停用或退出 DSH 后清空', '']);
+    await page.evaluate(() => window.harness.configure({ delay: 0 }));
+    await page.locator('#routeCard[data-s]:not([data-s=load])').waitFor();
     await page.evaluate(() => window.harness.inject({ default_extra_sources: 17, response_max_chars: 900000 }));
     await refresh();
     await page.locator('#nodeHub').click();
@@ -383,8 +478,17 @@ async page => {
     await page.evaluate(() => window.harness.configure({ route: { at: Date.now(), origin: 'search', outcome: 'ok',
       served: 'grok-sources', grokCode: 'grok_auth_error', fallbackUsed: true, failures: [] } }));
     await refresh();
-    await page.locator('.banner:has-text("Grok 内置补充链")').waitFor();
+    await page.locator('.banner:has-text("来源未报告")').waitFor();
     check('unidentified MCP fallback does not light arbitrary source', await page.locator('#rowsSupp .row[data-st=live]').count(), 0);
+    await state('returning');
+    await page.evaluate(() => window.harness.configure({ route: { at: Date.now(), origin: 'search', outcome: 'ok',
+      served: 'tavily', grokCode: 'grok_sources_empty', fallbackUsed: true, failures: [],
+      resultProviders: ['tavily'], resultProvidersComplete: true, provenance: 'source-label' } }));
+    await refresh();
+    check('reported supplier replaces the generic MCP fallback banner', await page.locator('.banner').textContent()
+      .then(text => text.includes('回退到 Tavily') && !text.includes('补充链')));
+    check('reported supplier uses its actual route branch', await page.locator('#rowsSupp .row[data-st=live]').getAttribute('data-id'), 'tavily');
+    check('MCP result attribution does not certify any individual Tavily key', await page.locator('.s-node[data-id=tavily] .s-dot[data-tone=ok]').count(), 0);
     await state('returning');
     await page.evaluate(() => window.harness.configure({ delay: 2500 }));
     await page.locator('#testBtn').click();
@@ -403,6 +507,46 @@ async page => {
       return stage.dataset.layout === 'wide' && getComputedStyle(stage).gridTemplateColumns.split(' ').length === 3;
     }));
     check('no host horizontal overflow', await read(() => document.documentElement.scrollWidth <= innerWidth));
+    for (const width of [1646, 1366, 1100, 900, 700]) {
+      await page.setViewportSize({ width, height: 925 });
+      for (const theme of ['light', 'dark']) {
+        await page.evaluate(theme => window.harness.theme(theme), theme);
+        // CSS spacing transitions and wire coordinates must settle together.
+        await page.waitForFunction(() => {
+          const root = document.querySelector('[data-dsg-route]')?.shadowRoot;
+          const stage = root?.querySelector('#stage');
+          return stage && !stage.getAnimations().some(animation => animation.playState === 'running');
+        });
+        check(`route fits actual slot at ${width}px ${theme}`, await read(() => {
+          const mount = document.querySelector('[data-dsg-route]'), root = mount.shadowRoot;
+          const card = root.querySelector('#routeCard'), log = root.querySelector('#logCard');
+          const bounds = mount.getBoundingClientRect();
+          const contained = element => {
+            if (!element.getClientRects().length || getComputedStyle(element).visibility === 'hidden') return true;
+            const rect = element.getBoundingClientRect();
+            return rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1;
+          };
+          return [mount, root.querySelector('.dsg-root'), root.querySelector('.route-scroll'), card]
+            .every(element => element.scrollWidth <= element.clientWidth + 1)
+            && Math.abs(card.getBoundingClientRect().width - log.getBoundingClientRect().width) < 1
+            && [...root.querySelectorAll('#routeCard,#stage,.rc-head,.rc-actions,#testBtn,.node,.row,.row .switch,.rc-foot [data-open]')]
+              .every(contained)
+            && [...root.querySelectorAll('.row-name')].every(element => element.scrollWidth <= element.clientWidth + 1);
+        }));
+      }
+    }
+    await page.evaluate(() => {
+      window.harness.theme('light');
+      const root = document.querySelector('[data-dsg-route]').shadowRoot;
+      root.querySelector('.banner .b-text code').textContent = 'C:/' + 'long-config-folder/'.repeat(18) + 'config.toml';
+      root.querySelector('#cfgPath').textContent = 'C:/' + 'long-config-folder/'.repeat(18) + 'config.toml';
+    });
+    check('long configuration paths cannot widen or clip the route', await read(() => {
+      const mount = document.querySelector('[data-dsg-route]'), root = mount.shadowRoot;
+      const card = root.querySelector('#routeCard'), text = root.querySelector('.banner .b-text');
+      return card.scrollWidth <= card.clientWidth + 1 && text.scrollWidth <= text.clientWidth + 1;
+    }));
+    await state('returning');
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await card('tinyfish');
     await close();

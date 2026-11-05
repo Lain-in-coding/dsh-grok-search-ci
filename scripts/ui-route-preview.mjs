@@ -29,8 +29,8 @@ const { runId, directory } = freshRun('ui-route-browser');
 const runs = new Map([[runId, directory]]);
 const sourceHashes = ['src/client.js', 'src/client.template.js', 'src/ui/route-controller.mjs',
   'src/ui/search-log-view.mjs', 'src/ui/quota-view.mjs', 'src/ui/route.css', 'src/ui/search-log.css',
-  'src/ui/route-card.html', 'src/settings-ui.mjs', 'fixtures/ui-route-harness.mjs',
-  'test/ui-search-log-browser.js', 'test/ui-route-browser.js',
+  'src/ui/route-card.html', 'src/settings-ui.mjs', 'fixtures/ui-route-harness.mjs', 'fixtures/ui-route-harness.html',
+  'test/ui-search-log-browser.js', 'test/ui-route-browser.js', 'test/ui-settings-performance-browser.js',
   ...(liveEvidence ? ['test/ui-search-log-live-browser.js'] : [])].map(file => ({ file, sha256: sha256(join(project, file)) }));
 const allowed = new Map([
   ['/', ['fixtures/ui-route-harness.html', 'text/html; charset=utf-8']],

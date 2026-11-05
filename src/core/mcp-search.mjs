@@ -5,7 +5,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createSessionOwner } from './session-owner.mjs';
 import { GrokSearchError, isRecord, timeoutError } from './errors.mjs';
-import { decodeGrokResult, mapSearchResult } from './result-map.mjs';
+import { decodeGrokResult, mapSearchResult, searchSourceProvenance } from './result-map.mjs';
 import { parse } from 'smol-toml';
 
 const FRAME_BYTES = 1_048_576;
@@ -388,6 +388,7 @@ export async function runMcpSearch({
   // grok_timeout, ...); safeLabel keeps any free text out of diagnostics.
   const diagnostic = { serverVersion, sdkEntry, searchProvider: safeLabel(payload?.search_provider), fallbackUsed: payload?.fallback_used ?? null,
     fallbackReason: safeLabel(payload?.fallback_reason),
+    sourceProvenance: searchSourceProvenance(result?.sources),
     sourceRecovery, elapsedMs: Math.round(performance.now() - started), ...(transport?.diagnostic() ?? { exited: true, childPid: null }) };
   if (error !== undefined) {
     if (error instanceof Error && Object.isExtensible(error) && !Object.hasOwn(error, 'diagnostic')) Object.defineProperty(error, 'diagnostic', { value: diagnostic });

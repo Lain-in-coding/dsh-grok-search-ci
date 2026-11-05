@@ -7,6 +7,7 @@ import { createSourceChain } from '../src/core/source-chain.mjs';
 import { createRouteController } from '../src/ui/route-controller.mjs';
 import { createSearchLogView } from '../src/ui/search-log-view.mjs';
 import { createQuotaView } from '../src/ui/quota-view.mjs';
+import { createToolRouteView } from '../src/ui/tool-route-view.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const logoDir = join(root, 'src', 'assets', 'logos');
@@ -34,6 +35,7 @@ writeFileSync(join(root, 'src', 'client.js'), template
   .replace('__ROUTE_CONTROLLER_FACTORY__', () => createRouteController.toString())
   .replace('__SEARCH_LOG_FACTORY__', () => createSearchLogView.toString())
   .replace('__QUOTA_FACTORY__', () => createQuotaView.toString())
+  .replace('__TOOL_ROUTE_FACTORY__', () => createToolRouteView.toString())
   .replace('__ROUTE_CSS__', () => JSON.stringify(readFileSync(join(root, 'src/ui/route.css'), 'utf8')
     + '\n' + readFileSync(join(root, 'src/ui/search-log.css'), 'utf8')))
   .replace('__ROUTE_CARD__', () => JSON.stringify(readFileSync(join(root, 'src/ui/route-card.html'), 'utf8')))

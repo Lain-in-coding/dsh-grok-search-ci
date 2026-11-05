@@ -10,6 +10,8 @@ import { createProductStore, normalizeCounterSnapshot, readSelection, PRODUCT_SE
   from './core/product-control.mjs';
 import { createConnectionSecurity } from './core/connection-security.mjs';
 import { createPrivatePreferences } from './core/private-preferences.mjs';
+import { createSearchLog } from './core/search-log.mjs';
+import { createToolRouteContext } from './core/tool-route-context.mjs';
 import { join } from 'node:path';
 
 export const name = 'dsh-grok-search';
@@ -21,6 +23,12 @@ export const ENTRY_ID = 'grok-search';
 // a WebRuntime rebuild and leaves a missing/unavailable Grok provider fail-closed.
 export async function apply(ctx, configuration) {
   const store = createProductStore(ctx);
+  // These lifetimes follow the selected bundle, not a settings page or rebuilt WebRuntime.
+  const searchLog = createSearchLog(), callRoutes = createToolRouteContext({ searchLog });
+  ctx.provide('grokSearchLog', searchLog);
+  ctx.provide('grokSearchCallRoutes', callRoutes);
+  ctx.on('tools/execute', (exec, next) => callRoutes.run(exec, next), { global: true, prepend: true });
+  ctx.effect(() => () => { searchLog.dispose(); callRoutes.dispose(); });
   const preferences = createPrivatePreferences({
     path: join(ctx.profileContext.dir, 'grok-search', 'preferences.json'),
   });

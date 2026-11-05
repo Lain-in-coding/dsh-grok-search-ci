@@ -20,7 +20,7 @@
     "test:mcp": "node scripts/mcp-session-probe.mjs --runtime-root .",
     "test:config": "node --test test/shared-config.test.mjs",
     "test:security": "node --test test/connection-security.test.mjs",
-    "test:source": "node --test test/source-adapters.test.mjs test/source-chain.test.mjs test/private-preferences.test.mjs test/routed-search.test.mjs test/search-log.test.mjs test/account-quota.test.mjs",
+    "test:source": "node --test test/source-adapters.test.mjs test/source-chain.test.mjs test/private-preferences.test.mjs test/routed-search.test.mjs test/search-log.test.mjs test/tool-route-context.test.mjs test/account-quota.test.mjs",
     "test:settings": "node --test test/settings-gateway.test.mjs",
     "build:client": "node scripts/build-client.mjs",
     "test:program": "node --test test/program-discovery.test.mjs test/program-install.test.mjs test/program-controller.test.mjs",
@@ -88,7 +88,8 @@
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-plugin-manager",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-tool"
       ],
       "platform": "web"
     }

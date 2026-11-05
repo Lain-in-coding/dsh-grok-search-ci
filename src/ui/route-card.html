@@ -94,7 +94,7 @@
     <div class="lc-head">
       <div class="lc-title">
         <h3 id="logTitle">最近搜索 <span class="lc-count" id="logCount">0</span></h3>
-        <p class="lc-sub">打开设置页后记录 · 点开查看调用与消耗</p>
+        <p class="lc-sub">点击记录查看查询与消耗</p>
       </div>
       <div class="lc-actions">
         <div class="lc-filters" role="radiogroup" aria-label="筛选搜索记录">
@@ -109,8 +109,10 @@
     </div>
     <div class="log-list" id="logList" role="list" aria-label="最近搜索与路由事件"></div>
     <footer class="lc-foot">
-      <span id="logNote">仅内存 · 最近 20 条 · 关闭设置页清空</span>
+      <span id="logNote">仅内存 · 最近 20 条 · 停用或退出 DSH 后清空</span>
       <button type="button" class="btn btn-ghost btn-sm" id="logClear">清空记录</button>
     </footer>
     <div class="sr-only" id="logAnnouncer" role="status" aria-live="polite" aria-atomic="true"></div>
   </section>
+
+<div class="route-tooltip" id="logTooltip" role="tooltip" hidden></div>

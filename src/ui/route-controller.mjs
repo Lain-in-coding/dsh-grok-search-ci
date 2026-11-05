@@ -3,7 +3,7 @@
  * Self-contained so build-client can embed this factory without runtime imports.
  * root/layer belong to this mount, never the host document's selector namespace.
  */
-export function createRouteController({ root, layer, remote, logos, sourceChain, memory = {}, createSearchLogView, createQuotaView }) {
+export function createRouteController({ root, layer, remote, logos, sourceChain, memory = {}, logMemory = null, createSearchLogView, createQuotaView, dark = false }) {
 let disposed = false;
 let logView = null, quotaView = null;
 const timers = new Set(), frames = new Set(), waits = new Set(), listeners = new Set();
@@ -40,7 +40,8 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const RM = window.matchMedia('(prefers-reduced-motion: reduce)');
 const reduced = () => RM.matches;
-let darkTheme = false;
+let darkTheme = dark === true || dark === 'dark';
+root.dataset.theme = layer.dataset.theme = darkTheme ? 'dark' : 'light';
 const HIDDEN = '\u2063dsg-configured-secret:';
 const hidden = value => typeof value === 'string' && value.startsWith(HIDDEN);
 const configFields = () => S.config?.fields || {};
@@ -253,17 +254,24 @@ function acceptSnapshot(snapshot, preferences, { first = false, keepTrace = true
   if (oldOrder !== S.order.join()) buildRows(false);
   ingestRoute(snapshot.route, first);
   syncAll(keepTrace);
-  void logView?.read();
+  syncOpenCardBaseline();
 }
-let readTask = null, pollTimer = 0;
-async function refresh({ first = false, force = false } = {}) {
+let readTask = null, pollTimer = 0, snapshotSignature = null;
+async function refresh({ first = false, force = false, readLog = true } = {}) {
   if (disposed) return;
   if (readTask) return readTask;
   if (!force && (S.busy || S.testing || drag)) return;
   readTask = (async () => {
     try {
       const [snapshot, prefs] = await Promise.all([remote.snapshot(), remote.preferences()]);
-      if (!disposed) acceptSnapshot(snapshot, prefs, { first });
+      if (!disposed) {
+        const signature = JSON.stringify([snapshot, prefs]);
+        if (first || force || S.rpcError || signature !== snapshotSignature) {
+          acceptSnapshot(snapshot, prefs, { first });
+          snapshotSignature = signature;
+        }
+        if (readLog) void logView?.read();
+      }
     } catch (error) {
       if (disposed) return;
       S.loading = false;
@@ -276,7 +284,7 @@ async function refresh({ first = false, force = false } = {}) {
 function schedulePoll() {
   clearTimeout(pollTimer);
   pollTimer = setTimeout(async () => {
-    if (document.visibilityState !== 'hidden') await refresh();
+    if (document.visibilityState !== 'hidden') await refresh({ readLog: false });
     if (!disposed) schedulePoll();
   }, 3000);
 }
@@ -313,6 +321,14 @@ function operationError(error, dialog = false) {
     shake(dlg);
   } else toast(`${code} · ${message}`, { tone: 'err', ms: 5200 });
 }
+// An external write leaves an open card's baseline behind. When that blocks its
+// quota panel, offer the existing explicit reload; never rebase the draft silently.
+function syncOpenCardBaseline() {
+  if (D?.kind === 'card' && !dialogBusy() && D.operationError?.code !== 'CONFIG_CONFLICT' && quotaView?.stale()) {
+    D.operationError = { code: 'CONFIG_CONFLICT', message: '配置已在别处修改，请先读取最新配置。' };
+    refreshDialog();
+  } else quotaView?.render();
+}
 async function reloadDialogDraft() {
   if (!D || dialogBusy() || S.busy || disposed) return;
   const mine = D, previous = clone(mine.base), draft = clone(mine.draft);
@@ -338,7 +354,7 @@ async function reloadDialogDraft() {
       message: '已读取最新配置并保留你的修改。请核对后再保存；本次没有写入。' };
     mine.show = {};
     mine.saving = false;
-    if (mine.kind === 'card') renderCard(); else renderHub();
+    if (mine.kind === 'card') { renderCard(); void quotaView?.open(); } else renderHub();
   } catch (error) { if (D === mine) operationError(error, true); }
   finally { S.busy = false; if (D === mine) mine.saving = false; }
 }
@@ -433,7 +449,7 @@ function ingestRoute(route, first = false) {
   if (route.grokCode !== 'DISABLED' && grokOn()) {
     rememberCheck('grok', 0, route.grokCode ? normalizeCode(route.grokCode) : '', 'search', route.at);
   }
-  if (SUPP.includes(route.served)) {
+  if (SUPP.includes(route.served) && route.provenance !== 'source-label') {
     delete S.providerBad[route.served];
     if (route.served === 'tavily') {
       // MCP/source search does not identify the successful Key. Do not turn
@@ -452,7 +468,8 @@ function ingestRoute(route, first = false) {
     reroute: route.fallbackUsed === true, outcome: route.outcome,
     done: { tone: route.outcome === 'ok' ? 'ok' : 'err',
       text: route.outcome !== 'ok' ? '全部不可用'
-        : route.served === 'grok-sources' ? '已回退 · Grok 内置补充链'
+        : route.resultProviders?.length && route.fallbackUsed ? `已回退 · ${route.resultProviders.filter(id => META[id]).map(id => META[id].name).join(' / ')}${route.resultProvidersComplete ? '' : ' / 来源未报告'}`
+          : route.served === 'grok-sources' ? '已回退 · 来源未报告'
           : route.fallbackUsed ? `已回退 · ${META[route.served]?.name || '补充来源'}` : 'Grok 搜索完成' } };
   clearTimeout(S.traceTimer);
   S.traceTimer = setTimeout(() => { S.trace = null; renderSummary(); pumpWires(200); }, 6500);
@@ -488,10 +505,14 @@ const isPart = (id) => faultOf(S.bad, id) === 'some';
 const grokOn = () => isOn('grok');
 const usable = (id) => isOn(id) && !isBad(id);
 const requestFailed = id => S.lastRoute?.failures?.some(failure => failure.provider === id) === true;
-const unknownFallback = () => S.lastRoute?.served === 'grok-sources' && S.lastRoute.outcome === 'ok';
+const observedSupp = () => (S.lastRoute?.resultProviders || [S.lastRoute?.served]).filter(id => SUPP.includes(id));
+const unknownFallback = () => S.lastRoute?.served === 'grok-sources' && S.lastRoute.outcome === 'ok' && !observedSupp().length;
 const servingSupp = () => unknownFallback() || S.lastRoute?.outcome === 'failed' ? null
-  : SUPP.includes(S.lastRoute?.served) && isOn(S.lastRoute.served) && !requestFailed(S.lastRoute.served)
-    ? S.lastRoute.served : enabledSupp().find(id => !isBad(id) && !requestFailed(id)) || null;
+  : S.lastRoute?.resultProviders ? observedSupp().find(id => isOn(id) && !requestFailed(id)) || null
+    : SUPP.includes(S.lastRoute?.served) && isOn(S.lastRoute.served) && !requestFailed(S.lastRoute.served)
+      ? S.lastRoute.served : enabledSupp().find(id => !isBad(id) && !requestFailed(id)) || null;
+const servingSupps = () => S.lastRoute?.resultProviders && S.lastRoute.outcome === 'ok'
+  ? observedSupp().filter(id => isOn(id) && !requestFailed(id)) : [servingSupp()].filter(Boolean);
 /* checked 只记录完成时间和来源；成败统一由 bad 与完成记录共同确定。
    pending 属于本轮 trace，不能覆盖上一次已经完成的验证结果。 */
 function savedCheck(id, slot = 0) {
@@ -542,6 +563,7 @@ function routeStatus() {
   if (!['required'].includes(S.control?.phase)) return 'connecting';
   if (S.lastRoute?.outcome === 'failed') return 'err';
   const sv = servingSupp();
+  if (S.lastRoute?.outcome === 'ok' && S.lastRoute.fallbackUsed && S.lastRoute.resultProviders) return 'fallback';
   if (unknownFallback()) return 'fallback';
   if (S.prov.grok.enabled !== false && ['idle', 'discovering', 'checking-version', 'downloading', 'verifying'].includes(S.program?.phase)) {
     return sv ? 'backup' : 'prep';
@@ -574,7 +596,7 @@ function rowState(id) {
   if (S.prov[id].enabled === false) return 'off';
   if (st === 'off' || id === 'github') return 'on';
   if (isBad(id) || requestFailed(id)) return st === 'err' ? 'err' : 'bad';
-  if ((st === 'fallback' || st === 'backup') && servingSupp() === id) return 'live';
+  if ((st === 'fallback' || st === 'backup') && servingSupps().includes(id)) return 'live';
   return 'on';
 }
 
@@ -584,7 +606,7 @@ const RANK = { hidden: 0, unset: 1, rest: 2, broken: 3, aux: 4, standby: 5, warn
 function wireDefs() {
   const st = routeStatus();
   const off = st === 'off';
-  const sv = servingSupp();
+  const serving = servingSupps();
   const covering = st === 'fallback' || st === 'backup';
   const defs = [];
   const top = { off: 'rest', load: 'hidden', down: 'rest', cfgerr: 'broken', ctlerr: 'broken',
@@ -602,7 +624,7 @@ function wireDefs() {
     else if (id === 'github') ws = isOn('github') ? 'aux' : 'unset';
     else if (isBad(id) || requestFailed(id) || id === 'grok' && S.program?.phase === 'error') ws = 'broken';
     else if (id === 'grok') ws = S.program?.phase === 'ready' ? 'live' : 'warn';
-    else ws = covering && id === sv ? 'live' : 'standby';
+    else ws = covering && serving.includes(id) ? 'live' : 'standby';
     defs.push({ id: 'hub-' + id, a: 'hub-out', b: 'row-' + id, ws, kind: 'branch', at: 'end' });
   });
   return defs;
@@ -610,12 +632,6 @@ function wireDefs() {
 function portEl(name) {
   if (name.startsWith('row-')) return $(`#colList .row[data-id="${name.slice(4)}"] > .port`);
   return $(`.port[data-port="${name}"]`);
-}
-function portXY(name, sr) {
-  const el = portEl(name);
-  if (!el) return null;
-  const r = el.getBoundingClientRect();
-  return { x: r.left + r.width / 2 - sr.left, y: r.top + r.height / 2 - sr.top };
 }
 function pathFor(d, A, B) {
   if (d.kind === 'alt') return `M${A.x},${A.y} L${B.x},${B.y}`;
@@ -692,25 +708,41 @@ function syncBreak(g, prev, at) {
 function drawWires() {
   const stage = $('#stage');
   const sr = stage.getBoundingClientRect();
+  const computed = getComputedStyle(stage);
+  const scaleX = sr.width / (parseFloat(computed.width) || sr.width || 1) || 1;
+  const scaleY = sr.height / (parseFloat(computed.height) || sr.height || 1) || 1;
   const defs = wireDefs();
+  // Measure every port before changing any SVG/port style. Measuring the next
+  // branch after writing the previous one forced a layout per branch per frame.
+  const ports = new Map();
+  for (const d of defs) for (const name of [d.a, d.b]) if (!ports.has(name)) {
+    const el = portEl(name), r = el?.getBoundingClientRect();
+    ports.set(name, { el, point: r ? {
+      x: (r.left + r.width / 2 - sr.left) / scaleX,
+      y: (r.top + r.height / 2 - sr.top) / scaleY,
+    } : null });
+  }
   const portRank = {};
   const live = new Set();
+  const breaks = [];
   let breaking = 0;
   defs.forEach((d) => {
     live.add(d.id);
     const fresh = !wireNodes.has(d.id);
     const g = ensureWire(d.id);
     const prev = g.dataset.ws;
-    g.dataset.ws = d.ws;
+    if (prev !== d.ws) g.dataset.ws = d.ws;
     const requesting = S.testing && !S.trace?.done && (d.id === 'dsh-hub'
       || S.trace?.items.some((it) => it.tone === 'run' && d.id === 'hub-' + it.id));
-    g.dataset.requesting = String(!!requesting);
-    const A = portXY(d.a, sr), B = portXY(d.b, sr);
+    if (g.dataset.requesting !== String(!!requesting)) g.dataset.requesting = String(!!requesting);
+    const A = ports.get(d.a).point, B = ports.get(d.b).point;
     if (A && B) {
       const dd = pathFor(d, A, B);
-      g.children[0].setAttribute('d', dd);
-      g.children[1].setAttribute('d', dd);
-      breaking = Math.max(breaking, syncBreak(g, prev, d.at));
+      if (g.children[1].getAttribute('d') !== dd) {
+        g.children[0].setAttribute('d', dd);
+        g.children[1].setAttribute('d', dd);
+      }
+      breaks.push({ g, prev, at: d.at });
     }
     if (!fresh && prev !== d.ws) {
       if (!S.testing && performance.now() > quietUntil) onWireChange(d, g, prev);
@@ -718,6 +750,7 @@ function drawWires() {
     }
     [d.a, d.b].forEach((pn) => { if ((portRank[pn] ?? -1) < RANK[d.ws]) portRank[pn] = RANK[d.ws]; });
   });
+  for (const { g, prev, at } of breaks) breaking = Math.max(breaking, syncBreak(g, prev, at));
   for (const [id, g] of wireNodes) if (!live.has(id)) { g.remove(); wireNodes.delete(id); }
   const rk = (g) => (g.classList.contains('lit') ? 99 : RANK[g.dataset.ws]);
   const sorted = defs.map((d) => wireNodes.get(d.id)).sort((x, y) => rk(x) - rk(y));
@@ -726,7 +759,10 @@ function drawWires() {
   if (!packetLayer) { packetLayer = document.createElementNS(SVGNS, 'g'); packetLayer.setAttribute('class', 'packets'); }
   if (wiresEl.lastChild !== packetLayer) wiresEl.appendChild(packetLayer);
   const names = Object.keys(RANK);
-  Object.entries(portRank).forEach(([pn, rk]) => { const el = portEl(pn); if (el) el.dataset.ps = names.find((n) => RANK[n] === rk); });
+  Object.entries(portRank).forEach(([pn, rk]) => {
+    const el = ports.get(pn).el, state = names.find(n => RANK[n] === rk);
+    if (el && el.dataset.ps !== state) el.dataset.ps = state;
+  });
   if (breaking) pumpWires(breaking);
 }
 let pumpUntil = 0, pumpRaf = 0;
@@ -786,7 +822,8 @@ const card = $('#routeCard');
 const resizeObserver = new ResizeObserver(() => requestAnimationFrame(() => pumpWires(80)));
 resizeObserver.observe(card);
 const historyActionsObserver = new ResizeObserver(([entry]) => {
-  card.style.setProperty('--history-actions-width', entry.contentRect.width + 'px');
+  const width = entry.contentRect.width + 'px';
+  if (card.style.getPropertyValue('--history-actions-width') !== width) card.style.setProperty('--history-actions-width', width);
 });
 historyActionsObserver.observe($('.rc-actions', card));
 
@@ -843,10 +880,18 @@ function syncRow(el) {
 }
 function syncRows() { $$('#colList .row').forEach(syncRow); syncMarks(); }
 function buildRows(animate) {
-  $('#rowsPrimary').replaceChildren(rowEl('grok'));
-  $('#rowsSupp').replaceChildren(...S.order.map(rowEl));
-  $('#rowsExtract').replaceChildren(rowEl('github'));
+  for (const [target, ids] of [['#rowsPrimary', ['grok']], ['#rowsSupp', S.order], ['#rowsExtract', ['github']]]) {
+    const parent = $(target);
+    const nodes = new Map([...parent.children].map(node => [node.dataset.id, node]));
+    ids.forEach((id, index) => {
+      const node = nodes.get(id) || rowEl(id);
+      if (parent.children[index] !== node) parent.insertBefore(node, parent.children[index] || null);
+    });
+  }
   syncRows();
+  animateRows(animate);
+}
+function animateRows(animate) {
   if (animate && !reduced()) {
     $$('#colList .row').forEach((r, i) => {
       r.style.setProperty('--i', i);
@@ -1123,6 +1168,7 @@ const NETWORK_ERRORS = {
   GROK_PLATFORM_UNSUPPORTED: ['平台', '系统或架构不支持'], GROK_INSTALL_BUSY: ['安装', '程序正在安装'],
   GROK_PROGRAM_REAP_FAILED: ['回收', '程序回收未完成'], GROK_PROCESS_REAP_FAILED: ['回收', '进程回收未完成'],
   SETTINGS_UNAVAILABLE: ['连接', '设置服务不可用'], SOURCE_UNAVAILABLE: ['来源', '来源服务不可用'],
+  FALLBACK_SOURCES_ZERO: ['配置', '回退来源数为 0'],
 };
 function failureInfo(code) {
   const value = normalizeCode(code).toUpperCase();
@@ -1229,12 +1275,15 @@ function renderBanner() {
   } else if (st === 'off') {
     html = B('info', 'info', '已恢复原搜索设置，无需重启', '配置已保留。请在插件页使用 dsh-grok-search 的原生开关重新启用。');
   } else if (st === 'fallback') {
-    const observed = unknownFallback() ? 'Grok 内置补充链' : META[sv]?.name || '补充来源';
+    const observed = S.lastRoute?.resultProviders?.length
+      ? S.lastRoute.resultProviders.filter(id => META[id]).map(id => META[id].name).join(' / ')
+        + (S.lastRoute.resultProvidersComplete ? '' : ' / 来源未报告')
+      : unknownFallback() ? '来源未报告' : META[sv]?.name || '补充来源';
     const grokCode = codeOf('grok') || S.program?.error?.code;
     const rotates = sv && codeOf(sv).split('/').every((code) => TAVILY_ROTATE.has(code));
     const part = sv && isPart(sv) ? `；${META[sv].name} 有 Key 返回 ${codeOf(sv)}${rotates ? '，可换用其他 Key' : '，各 Key 的验证结果单独保留'}` : '';
     html = B('fallback', 'reroute', `Grok ${failureInfo(grokCode).status} · ${errText(grokCode)}，已静默回退到 ${observed}`,
-      `搜索照常可用，结果来自补充来源${part}。修好 Grok 后自动切回，不会回退官方搜索。`,
+      `搜索照常可用，${S.lastRoute?.provenance === 'source-label' ? '来源按返回结果确认' : '结果来自补充来源'}${part}。修好 Grok 后自动切回，不会回退官方搜索。`,
       btn('open:grok', '检查 Grok 配置') + btn('grok-off', '关闭 Grok'));
   } else if (st === 'err') {
     const fails = failList();
@@ -1320,12 +1369,25 @@ function dismissToast(el) {
   el.classList.add('is-out');
   setTimeout(() => el.remove(), 180);
 }
+const shakeCleanups = new WeakMap();
 function shake(el) {
   if (!el) return;
+  shakeCleanups.get(el)?.();
   el.classList.remove('shake');
   void el.offsetWidth;
   el.classList.add('shake');
-  el.addEventListener('animationend', function h(e) { if (e.animationName === 'shake') { el.classList.remove('shake'); el.removeEventListener('animationend', h); } });
+  let timer, offEnd, offCancel;
+  const clean = () => {
+    clearTimeout(timer);
+    el.classList.remove('shake');
+    offEnd?.(); offCancel?.();
+    shakeCleanups.delete(el);
+  };
+  const end = event => { if (event.target === el && event.animationName === 'shake') clean(); };
+  shakeCleanups.set(el, clean);
+  offEnd = listen(el, 'animationend', end);
+  offCancel = listen(el, 'animationcancel', end);
+  timer = setTimeout(clean, reduced() ? 0 : 450);
 }
 function bump(el) {
   if (!el) return;
@@ -1615,6 +1677,7 @@ const dlg = $('#dialog');
 const testPop = $('#testPop');
 let D = null;
 let closeTimer = 0;
+let overlayEntranceTimer = 0;
 let gen = 0;
 const dialogBusy = () => !!D && (D.saving || D.clearing);
 function resetClearConfirmation() {
@@ -1633,18 +1696,23 @@ function lockDialog() {
 }
 function showOverlay() {
   hideStripTip();
+  logView?.hideTip();
   clearTimeout(closeTimer);
   overlay.classList.remove('is-closing');
   if (overlay.hidden) {
     clearToasts();
     overlay.hidden = false;
     dlg.classList.remove('is-in');
-    const done = () => dlg.classList.add('is-in');
-    dlg.addEventListener('animationend', function h(e) { if (e.target === dlg && e.animationName === 'dlg-in') { done(); dlg.removeEventListener('animationend', h); } });
-    setTimeout(done, 300);
+    clearTimeout(overlayEntranceTimer);
+    overlayEntranceTimer = setTimeout(() => {
+      overlayEntranceTimer = 0;
+      if (!overlay.hidden && D) dlg.classList.add('is-in');
+    }, reduced() ? 0 : 300);
   }
 }
 function hideOverlay(cb) {
+  clearTimeout(overlayEntranceTimer);
+  shakeCleanups.get(dlg)?.();
   overlay.classList.add('is-closing');
   closeTimer = setTimeout(() => {
     overlay.hidden = true;
@@ -1656,7 +1724,6 @@ function hideOverlay(cb) {
 function closeDialog(force) {
   if (!D) return;
   if (dialogBusy() && !force) return;
-  quotaView?.cancel();
   if (!force && isDirty() && !D.warned) {
     D.warned = true;
     shake(dlg);
@@ -1664,6 +1731,7 @@ function closeDialog(force) {
     if (fn) fn.innerHTML = '<b>有未保存的修改</b> · 再按一次 Esc 或点空白处放弃修改';
     return;
   }
+  quotaView?.cancel();
   const back = D.returnFocus;
   const id = D.id;
   clearTimeout(D.clearTimer);
@@ -1676,6 +1744,16 @@ function closeDialog(force) {
 overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) closeDialog(false); });
 listen(document, 'keydown', (e) => {
   if (!overlay.hidden && D) {
+    const mode = targetOf(e).closest?.('[data-a=mode]');
+    if (mode && !mode.disabled && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) {
+      e.preventDefault();
+      const modes = $$('[data-a=mode]', dlg).filter(button => !button.disabled);
+      const step = e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 1;
+      const next = e.key === 'Home' ? modes[0] : e.key === 'End' ? modes.at(-1)
+        : modes[(modes.indexOf(mode) + step + modes.length) % modes.length];
+      if (next) { setMode(next); $('[data-a=mode][aria-checked=true]', dlg)?.focus({ preventScroll: true }); }
+      return;
+    }
     if (e.key === 'Escape') { e.preventDefault(); closeDialog(false); return; }
     if (e.key === 'Tab') { trapTab(e); return; }
     if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
@@ -1718,7 +1796,10 @@ const fid = (k) => 'f-' + k.replace(/\./g, '-');
 function field({ label, hint, k, msg, ctl, help }) {
   const tag = k ? 'label' : 'span';
   const slot = msg || k;
-  const lab = `<${tag} class="f-label"${k ? ` for="${fid(k)}"` : ''}>${label}${k && fieldReadOnly(k) ? `<small>${svg('lock', 'ic ic-sm')}只读</small>` : hint ? `<small>${hint}</small>` : ''}</${tag}>`;
+  const sourceKey = D?.kind === 'card' ? CARD_FIELDS[D.id]?.[k?.startsWith('keys.') ? 'keys' : k] : HUB_FIELDS[k];
+  const environment = D?.fields?.[sourceKey]?.source === 'environment';
+  const locked = k && fieldReadOnly(k) ? `<small${environment ? ' title="此项由启动环境变量提供；请在启动环境中修改或移除覆盖，再使用共享配置。"' : ''}>${svg('lock', 'ic ic-sm')}${environment ? '环境变量 · 只读' : '只读'}</small>` : '';
+  const lab = `<${tag} class="f-label"${k ? ` for="${fid(k)}"` : ''}>${label}${locked || (hint ? `<small>${hint}</small>` : '')}</${tag}>`;
   const msgEl = slot ? `<p class="f-msg" id="${fid(slot)}-message" data-msg="${slot}" aria-live="polite" hidden></p>` : '';
   const helpEl = help ? `<p class="f-help"${slot ? ` id="${fid(slot)}-help"` : ''}>${help}</p>` : '';
   return `<div class="field">${lab}<div class="f-ctl">${ctl}${msgEl}${helpEl}</div></div>`;
@@ -1747,7 +1828,7 @@ function keyIn(k, v, ph, o = {}) {
   const cp = `<button type="button" class="icon-btn" data-a="copy" data-k="${k}" aria-label="复制密钥"${unavailable ? ' disabled' : ''}>${svg('copy')}</button>`;
   const del = o.del ? `<button type="button" class="icon-btn" data-a="del-key" data-i="${o.i}" aria-label="删除这个 Key"${ro ? ' disabled' : ''}>${svg('trash')}</button>` : '';
   const aria = o.aria ? ` aria-label="${o.aria}"` : '';
-  return `<div class="input${ro ? ' is-readonly' : ''}"><input id="${fid(k)}" type="${shown ? 'text' : 'password'}" class="mono" data-k="${k}" value="${isHidden ? '' : esc(v)}" placeholder="${isHidden ? '已配置 · 点击查看或编辑' : esc(ph || '')}" spellcheck="false" autocomplete="off"${aria}${isHidden ? ' data-hidden="true" readonly' : ro ? ' readonly' : ''}><span class="in-act">${eye}${cp}${del}</span></div>`;
+  return `<div class="input${ro ? ' is-readonly' : ''}"><input id="${fid(k)}" type="${shown ? 'text' : 'password'}" class="mono" data-k="${k}" value="${isHidden ? '' : esc(v)}" placeholder="${isHidden ? ro ? '已配置 · 点击查看' : '已配置 · 点击查看或编辑' : esc(ph || '')}" spellcheck="false" autocomplete="off"${aria}${isHidden ? ' data-hidden="true" readonly' : ro ? ' readonly' : ''}><span class="in-act">${eye}${cp}${del}</span></div>`;
 }
 function chip(k, v, label, cur) {
   return `<button type="button" class="chip" data-a="pick" data-k="${k}" data-v="${esc(v)}" aria-pressed="${(cur || '').trim() === v}"${fieldReadOnly(k) ? ' disabled' : ''}>${esc(label)}</button>`;
@@ -1787,11 +1868,11 @@ const FIELDS = {
   grok(p) {
     const compat = p.mode === 'compat';
     const protocolLocked = D.base.authReadOnly || D.fields.grok_api_key?.readOnly || !S.capabilities?.secretsAllowed;
-    const seg = `<div class="seg" role="radiogroup" aria-label="接口协议"><button type="button" role="radio" data-a="mode" data-v="responses" aria-checked="${!compat}"${protocolLocked ? ' disabled' : ''}>Responses 接口</button><button type="button" role="radio" data-a="mode" data-v="compat" aria-checked="${compat}"${protocolLocked ? ' disabled' : ''}>Chat Completions 接口</button></div>`;
+    const seg = `<div class="seg" role="radiogroup" aria-label="接口协议"><button type="button" role="radio" data-a="mode" data-v="responses" title="Responses 接口；支持兼容此协议的自定义服务" aria-checked="${!compat}" tabindex="${compat ? -1 : 0}"${protocolLocked ? ' disabled' : ''}>xAI Responses</button><button type="button" role="radio" data-a="mode" data-v="compat" title="Chat Completions 接口" aria-checked="${compat}" tabindex="${compat ? 0 : -1}"${protocolLocked ? ' disabled' : ''}>OpenAI 兼容网关</button></div>`;
     const segHelp = compat
       ? '切换时原 Responses API Key 会从共享配置删除并备份到配置历史；切回需重新填入或恢复历史。此模式不支持 X 搜索。'
       : p.authReadOnly ? '正在复用原有登录认证，认证配置在此只读。'
-        : '';
+        : D.fields.grok_api_key?.source === 'environment' ? 'API Key 由启动环境变量提供；移除该覆盖后，可在共享配置中修改 Key 和切换接口。' : '';
     let h = field({ label: '接口协议', ctl: seg, help: segHelp });
     if (compat) {
       h += field({ label: 'Base URL', k: 'gwUrl', ctl: txt('gwUrl', p.gwUrl, 'https://your-service/v1', { im: 'url' }) });
@@ -1812,7 +1893,7 @@ const FIELDS = {
     const rows = keys.map((v, i) => `<div class="key-row">${keyIn('keys.' + i, v, 'tvly-...', { del: keys.length > 1, i, aria: `Tavily Key ${i + 1}` })}</div>`).join('');
     const add = `<button type="button" class="add-key" data-a="add-key"${fieldReadOnly('keys') ? ' disabled' : ''}>${svg('plus', 'ic ic-sm')}添加另一个 Key</button>`;
     return field({ label: 'Base URL', k: 'url', ctl: txt('url', p.url, DEF.tavilyUrl, { im: 'url' }), help: KEEP_URL })
-      + field({ label: 'API Key', hint: '可填多个', msg: 'keys', ctl: `<div class="keylist">${rows}</div>${add}`, help: '多个 Key 按请求轮换；遇到 401、403、429、432、433 会自动换下一个。' });
+      + field({ label: 'API Key', k: 'keys.0', hint: '可填多个', msg: 'keys', ctl: `<div class="keylist">${rows}</div>${add}`, help: '多个 Key 按请求轮换；遇到 401、403、429、432、433 会自动换下一个。' });
   },
   exa(p) {
     return field({ label: 'Base URL', k: 'url', ctl: txt('url', p.url, DEF.exaUrl, { im: 'url' }), help: KEEP_URL })
@@ -2009,7 +2090,9 @@ function refreshDialog() {
     }
     const retry = ['CONFIG_CONFLICT', 'CONFIG_COMMIT_UNCERTAIN', 'PREFERENCES_CONFLICT', 'PREFERENCES_COMMIT_UNCERTAIN'].includes(D.operationError.code)
       ? '<button type="button" class="btn btn-sm" data-a="reload-draft">读取最新配置</button>' : '';
-    error.innerHTML = `${svg('info', 'ic ic-sm')}<span>${esc(D.operationError.code)} · ${esc(D.operationError.message)}</span>${retry}`;
+    const html = `${svg('info', 'ic ic-sm')}<span>${esc(D.operationError.code)} · ${esc(D.operationError.message)}</span>${retry}`;
+    // Keystrokes re-run refreshDialog; an unchanged alert is not rewritten and re-announced.
+    if (error._html !== html) { error.innerHTML = html; error._html = html; }
   }
   quotaView?.render();
 }
@@ -2336,7 +2419,7 @@ function headState() {
 }
 function headSwitch() {
   const h = headState();
-  return `<label class="head-switch" data-pending="${h.pending}"><span class="hs-text">${h.text}</span><button type="button" class="switch" role="switch" aria-checked="${h.on}"${h.pending ? ' aria-disabled="true" title="在下方填写后自动打开"' : ''} data-a="enabled"><i></i></button></label>`;
+  return `<label class="head-switch" data-pending="${h.pending}"><span class="hs-text">${h.text}</span><button type="button" class="switch" role="switch" aria-label="${esc(META[D.id]?.name || D.id)} ${h.text}" aria-checked="${h.on}"${h.pending ? ' aria-disabled="true" title="在下方填写后自动打开"' : ''} data-a="enabled"><i></i></button></label>`;
 }
 function syncHeadSwitch() {
   const hs = $('.head-switch', dlg);
@@ -2383,6 +2466,7 @@ function openCard(id, opt = {}) {
   };
   showOverlay();
   renderCard();
+  void quotaView?.open();
   requestAnimationFrame(initialFocus);
 }
 
@@ -2821,7 +2905,9 @@ async function runTest() {
 /* ---------- Mount-local theme, path actions and lifecycle ---------- */
 function setTheme(dark) {
   if (disposed) return;
-  darkTheme = dark === true || dark === 'dark';
+  const next = dark === true || dark === 'dark';
+  if (darkTheme === next) return;
+  darkTheme = next;
   root.dataset.theme = layer.dataset.theme = darkTheme ? 'dark' : 'light';
   refreshLogos();
   logView?.theme();
@@ -2861,7 +2947,7 @@ function init() {
   logView = createSearchLogView({ $, $$, active, S, card, layer, listen, remote, uuid, clone, esc, svg, tile,
     logoSrc, isDark, reduced, META, SUPP, setTimeout, clearTimeout, requestAnimationFrame, cancelAnimationFrame,
     T, jolts, faultPulses, syncBreak, travel, jolt, pulseFault, flashRow, flashNode, pumpWires, closePop,
-    hideStripTip, toast, errText, rowOf, SVGNS });
+    hideStripTip, toast, errText, rowOf, SVGNS, logMemory });
   quotaView = createQuotaView({ $, S, getDialog: () => D, dlg, active, DEF, SUPP, svg, EXT, esc,
     reduced, dialogBusy, remote, uuid, operationError });
   listen(dlg, 'click', event => {
@@ -2885,8 +2971,7 @@ function init() {
   syncAll(true);
   void refresh({ first: true }).then(() => {
     if (disposed) return;
-    buildRows(!memory.mounted);
-    syncAll(true);
+    animateRows(!memory.mounted);
     if (!memory.mounted) wiresEl.classList.add('draw');
     pumpWires(720);
   });
@@ -2907,6 +2992,8 @@ return Object.freeze({
     cancelDrag();
     cancelOwnedDiagnosis();
     gen++;
+    clearTimeout(overlayEntranceTimer);
+    shakeCleanups.get(dlg)?.();
     clearLit();
     resizeObserver.disconnect();
     historyActionsObserver.disconnect();

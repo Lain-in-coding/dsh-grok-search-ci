@@ -16,10 +16,8 @@ const QUOTA_ERRORS = {
   NETWORK: '查询失败', UNAVAILABLE: '查询失败', UNREPORTED: '查询失败',
 };
 const quotaCache = new Map();
-
-
+const QUOTA_CACHE_MS = 30_000;
 let quotaEpoch = 0;
-let quotaRequestSequence = 0;
 const quotaTime = () => new Date().toLocaleTimeString('zh-CN', { hour12: false });
 function quotaBase(id, p) {
   const raw = id === 'tinyfish' ? p.searchUrl || DEF.tfSearch
@@ -48,13 +46,18 @@ function quotaView() {
   if (!D || D.kind !== 'card' || !QUOTA_PROVIDERS.has(D.id)) return null;
   const context = quotaContext(D.id, D.draft, D.quotaKeyIndex);
   const saved = D.base;
-  const unchanged = JSON.stringify(D.id === 'tavily' ? D.draft.keys : D.draft.key) === JSON.stringify(D.id === 'tavily' ? saved.keys : saved.key) && quotaBase(D.id, saved) === context.base && D.configBaseline.revision === S.configRevision && D.configBaseline.quotaRevision === S.config?.quotaRevision;
+  // A draft edit and an external write are different states: only the first is "changed".
+  const draftSame = JSON.stringify(D.id === 'tavily' ? D.draft.keys : D.draft.key) === JSON.stringify(D.id === 'tavily' ? saved.keys : saved.key) && quotaBase(D.id, saved) === context.base;
+  const baselineCurrent = D.configBaseline.revision === S.configRevision && D.configBaseline.quotaRevision === S.config?.quotaRevision;
+  const unchanged = draftSame && baselineCurrent;
   const cached = quotaCache.get(context.scope);
-  const status = !context.key ? 'unconfigured' : !unchanged ? 'changed'
+  const status = !S.capabilities?.secretsAllowed ? 'restricted'
+    : !context.key ? 'unconfigured' : !draftSame ? 'changed'
     : D.id === 'exa' ? 'unsupported'
+      : !baselineCurrent ? 'stale'
       : D.quotaRequest?.scope === context.scope ? 'loading'
         : cached?.error ? 'error' : cached?.value ? 'ready' : 'unreported';
-  return { context, status, cached,
+  return { context, status, cached, unchanged,
     canRefresh: context.key && unchanged && !!context.base && D.id !== 'exa' && status !== 'loading' && !dialogBusy() && S.capabilities?.secretsAllowed };
 }
 function quotaHtml() {
@@ -68,8 +71,10 @@ function quotaHtml() {
   const credits = value?.kind === 'credits';
   const placeholder = {
     unconfigured: '填写 API Key 后查看', changed: '配置已修改，保存后刷新',
+    stale: '配置已在别处修改，读取最新配置后刷新',
     unsupported: '余额请到服务控制台查看', unreported: '尚未查询额度',
     error: QUOTA_ERRORS[cached?.error] || '查询失败', loading: '正在刷新额度',
+    restricted: '请使用本机直连或 HTTPS 查看额度',
   };
   const stat = (label, amount, name, primary = false) => `<div class="qp-stat${primary ? ' is-primary' : ''}" data-stat="${name}">
     <span class="qp-label">${label}</span><div class="qp-amount"><strong class="qp-value${quotaNumber(amount) ? '' : ' is-unknown'}">${quotaFormat(amount)}</strong>${quotaNumber(amount) ? '<span class="qp-unit">credits</span>' : ''}</div></div>`;
@@ -100,7 +105,7 @@ function quotaHtml() {
     <div class="qp-detail-content">${keyDetails}<p class="qp-note">${esc(value.note)}</p></div></div></div>` : '';
   const disclosure = credits ? `<button type="button" class="qp-disclosure" data-a="quota-details" aria-expanded="${!!D.quotaDetailsOpen}" aria-controls="quotaDetails">额度详情${svg('chev', 'ic ic-sm')}</button>` : '';
   const total = credits ? `<span class="qp-total">${quotaNumber(value.plan) ? `总额度 <b>${quotaFormat(value.plan)}</b> credits` : '总额度未报告'}</span>` : '';
-  return `<section class="quota-panel" id="quotaPanel" data-provider="${context.id}" data-state="${status}" data-kind="${value?.kind || ''}" aria-labelledby="quotaTitle">
+  return `<section class="quota-panel" id="quotaPanel" data-provider="${context.id}" data-state="${status}" data-kind="${value?.kind || ''}" aria-labelledby="quotaTitle" aria-busy="${status === 'loading'}">
     <header class="qp-head"><div class="qp-heading"><h3 id="quotaTitle">账户额度</h3>${consoleLink}</div>${select}${refresh}</header>
     <div class="qp-content"><div class="qp-main" aria-live="polite" aria-atomic="true">
       ${value ? `${metrics}${progress}<div class="qp-summary">${total}<span class="qp-updated" data-state="${status}">${stateText}</span>${disclosure}</div>${keyHint}`
@@ -110,6 +115,8 @@ function quotaHtml() {
 function renderQuota() {
   const slot = $('#quotaSlot', dlg);
   if (!slot || !D || D.kind !== 'card') return;
+  const html = quotaHtml();
+  if (slot._html === html) return;
   const focused = active()?.closest('#quotaSlot')?.querySelector(':focus');
   const focusKind = focused?.hasAttribute('data-quota-key') ? 'select'
     : focused?.dataset.a === 'quota-details' ? 'details'
@@ -117,8 +124,6 @@ function renderQuota() {
     : focused?.dataset.a === 'quota-refresh' || focused?.id === 'quotaPanel' ? 'refresh' : null;
   const previousMeter = $('.qp-meter i', slot);
   const previousTransform = previousMeter && getComputedStyle(previousMeter).transform;
-  const html = quotaHtml();
-  if (slot._html === html) return;
   slot._html = html;
   slot.innerHTML = html;
   const meter = $('.qp-meter i', slot);
@@ -154,10 +159,29 @@ function cancel() {
   if (D) D.quotaRequest = null;
   quotaEpoch++;
 }
-async function refresh() {
-  D = getDialog();
+function syncDialog() {
+  const next = getDialog();
+  if (D !== next) cancel();
+  D = next;
+}
+function render() {
+  if (disposed) return;
+  syncDialog();
   const view = quotaView();
-  if (disposed || !view?.canRefresh) return;
+  // A draft edit is not part of the saved account identity. Cancel immediately,
+  // including when the user later restores the old text before the reply arrives.
+  if (D?.quotaRequest && (!view?.unchanged || !S.capabilities?.secretsAllowed
+    || D.quotaRequest.scope !== view.context.scope)) cancel();
+  renderQuota();
+}
+async function refresh({ automatic = false } = {}) {
+  syncDialog();
+  const view = quotaView();
+  if (disposed) return;
+  // A manual click on a panel drawn before the state changed still explains why.
+  if (!view?.canRefresh) { if (!automatic) renderQuota(); return; }
+  const age = Date.now() - (view.cached?.completedAt ?? -Infinity);
+  if (automatic && age >= 0 && age < QUOTA_CACHE_MS) return;
   const mine = D, epoch = quotaEpoch;
   const request = { scope: view.context.scope, operationId: uuid() };
   mine.quotaRequest = request;
@@ -168,22 +192,36 @@ async function refresh() {
       expectedRevision: mine.configBaseline.revision, quotaRevision: mine.configBaseline.quotaRevision, operationId: request.operationId });
     if (disposed || getDialog() !== mine || epoch !== quotaEpoch || mine.quotaRequest !== request) return;
     D = mine; mine.quotaRequest = null;
-    if (quotaView()?.context.scope !== request.scope) return;
-    quotaCache.set(request.scope, { value: result.value, updatedAt: quotaTime(), error: result.value ? null : 'UNREPORTED' });
+    const current = quotaView();
+    if (!current?.unchanged || !S.capabilities?.secretsAllowed || current.context.scope !== request.scope) return;
+    quotaCache.set(request.scope, { value: result.value, updatedAt: quotaTime(),
+      completedAt: Date.now(), error: result.value ? null : 'UNREPORTED' });
   } catch {
     if (disposed || getDialog() !== mine || epoch !== quotaEpoch || mine.quotaRequest !== request) return;
     D = mine; mine.quotaRequest = null;
-    quotaCache.set(request.scope, { value: previous?.value ?? null, updatedAt: previous?.updatedAt, error: 'UNAVAILABLE' });
+    const current = quotaView();
+    if (!current?.unchanged || !S.capabilities?.secretsAllowed || current.context.scope !== request.scope) return;
+    quotaCache.set(request.scope, { value: previous?.value ?? null, updatedAt: previous?.updatedAt,
+      completedAt: Date.now(), error: 'UNAVAILABLE' });
   } finally {
     while (quotaCache.size > 16) quotaCache.delete(quotaCache.keys().next().value);
     if (!disposed && getDialog() === mine) { D = mine; renderQuota(); }
   }
 }
 return Object.freeze({
-  render() { if (!disposed) { D = getDialog(); renderQuota(); } },
+  render,
+  stale() { syncDialog(); return quotaView()?.status === 'stale'; },
+  open() { render(); return refresh({ automatic: true }); },
   refresh, cancel,
   details() { D = getDialog(); toggleQuotaDetails(); },
-  key(index) { D = getDialog(); if (D) { cancel(); D.quotaKeyIndex = index; D.quotaDetailsOpen = false; renderQuota(); } },
+  key(index) {
+    if (disposed || dialogBusy()) return;
+    syncDialog();
+    if (D) {
+      cancel(); D.quotaKeyIndex = index; D.quotaDetailsOpen = false; renderQuota();
+      return refresh({ automatic: true });
+    }
+  },
   dispose() { cancel(); disposed = true; D = null; quotaCache.clear(); },
 });
 }

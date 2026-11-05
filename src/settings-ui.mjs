@@ -168,6 +168,9 @@ const routeSchema = {
         served: nullableString,
         grokCode: nullableString,
         fallbackUsed: { type: 'boolean' },
+        resultProviders: { type: 'array', items: { type: 'string' } },
+        resultProvidersComplete: { type: 'boolean' },
+        provenance: { type: 'string' },
         code: { type: 'string' },
         failures: { type: 'array', items: { type: 'object', additionalProperties: true } },
       },
@@ -296,7 +299,7 @@ const descriptors = [
   ...['readSearchLog', 'clearSearchLog', 'closeSearchLog'].map(method => ({
     id: `dsh-grok-search#grokSearchSettings/${method}`,
     service: REMOTE_SERVICE, namespace: REMOTE_SERVICE, method,
-    description: 'Manage a bounded volatile search history lease over a secure owner connection.',
+    description: 'Read or clear plugin-owned volatile search history, or close only this secure view.',
     invocation: { kind: 'direct' },
     parameters: [{ name: 'request', wire: 'request', source: 'json',
       codec: codec(`dsh-grok-search/settings#${method}Request`, {
@@ -310,6 +313,31 @@ const descriptors = [
       }, additionalProperties: false,
     }),
   })),
+  {
+    id: 'dsh-grok-search#grokSearchSettings/toolCallRoute',
+    service: REMOTE_SERVICE, namespace: REMOTE_SERVICE, method: 'toolCallRoute',
+    description: 'Return the exact recorded routes for one session tool call; no query text or credentials.',
+    invocation: { kind: 'direct' },
+    parameters: [{ name: 'request', wire: 'request', source: 'json',
+      codec: codec('dsh-grok-search/settings#ToolCallRouteRequest', {
+        type: 'object', properties: { sessionId: { type: 'string' }, callId: { type: 'string' } },
+        required: ['sessionId', 'callId'], additionalProperties: false,
+      }) }],
+    result: codec('dsh-grok-search/settings#ToolCallRouteResult', {
+      type: 'object', properties: {
+        known: { type: 'boolean' },
+        state: { type: 'string' },
+        routes: { type: 'array', items: { type: 'object', properties: {
+          served: { type: ['string', 'null'] }, outcome: { type: 'string' },
+          fallbackUsed: { type: 'boolean' }, code: { type: 'string' },
+          resultProviders: { type: 'array', items: { type: 'string' } },
+          resultProvidersComplete: { type: 'boolean' },
+        }, required: ['served', 'outcome', 'fallbackUsed', 'code'], additionalProperties: false } },
+        // Present (false) only when the call made more searches than recorded routes.
+        routesComplete: { type: 'boolean' },
+      }, required: ['known', 'state', 'routes'], additionalProperties: false,
+    }),
+  },
   {
     id: 'dsh-grok-search#grokSearchSettings/accountQuota',
     service: REMOTE_SERVICE, namespace: REMOTE_SERVICE, method: 'accountQuota',
@@ -493,6 +521,8 @@ class GrokSearchSettingsGateway extends Service {
     this.typertRemote = Object.freeze({ service: this, serviceKey: REMOTE_SERVICE, namespace: REMOTE_SERVICE });
     this.control = ctx.get?.('grokSearchControl') ?? null;
     this.core = ctx.get?.('grokSearchCore') ?? null;
+    this.searchLog = ctx.get?.('grokSearchLog') ?? this.core?.searchLog ?? null;
+    this.callRoutes = ctx.get?.('grokSearchCallRoutes') ?? null;
     this.program = ctx.get?.('grokSearchProgram') ?? null;
     this.sourceRouter = ctx.get?.('grokSearchSourceRouter') ?? null;
     this.profileContext = ctx.get?.('profileContext') ?? ctx.profileContext ?? { dir: process.cwd() };
@@ -549,8 +579,8 @@ class GrokSearchSettingsGateway extends Service {
     this._owner();
     let config;
     try {
-      const store = this._store(), current = store.snapshot();
-      config = { ...current, quotaRevision: this._quotaRevision(store), displayPath: displayPath(current.path), error: null };
+      const store = this._store(), { snapshot: current, effective } = store.readSnapshot();
+      config = { ...current, quotaRevision: this._quotaRevision(store, effective), displayPath: displayPath(current.path), error: null };
     } catch (error) {
       const path = this.program?.snapshot?.()?.configPath || resolveSharedConfigPath({});
       config = {
@@ -800,17 +830,25 @@ class GrokSearchSettingsGateway extends Service {
 
   async readSearchLog(request = {}) {
     this._privateView();
-    return this.core?.searchLog?.snapshot(request.sessionId) ?? { records: [] };
+    return this.searchLog?.snapshot(request.sessionId) ?? { records: [] };
   }
 
   async clearSearchLog(request = {}) {
     this._privateView();
-    return this.core?.searchLog?.clear(request.sessionId) ?? { records: [] };
+    if (this.searchLog?.viewOpen(request.sessionId)) this.callRoutes?.clear();
+    return this.searchLog?.clear(request.sessionId) ?? { records: [] };
   }
 
   async closeSearchLog(request = {}) {
     this._privateView();
-    return this.core?.searchLog?.close(request.sessionId) ?? { closed: true };
+    return this.searchLog?.close(request.sessionId) ?? { closed: true };
+  }
+
+  async toolCallRoute(request = {}) {
+    this._owner();
+    // This endpoint exposes no query or response body; secure private log reads remain separate.
+    return this.callRoutes?.read(request.sessionId, request.callId)
+      ?? { known: false, state: 'unknown', routes: [] };
   }
 
   async accountQuota(request = {}) {
