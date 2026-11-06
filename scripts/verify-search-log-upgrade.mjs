@@ -10,8 +10,10 @@ import { cleanEnvironment, commandResult, freshRun, project, redact, sha256, wri
 
 // Restart-based upgrade and rollback in one new profile. No real credentials,
 // official profile writes, dependency installation or deletion of old packages.
-const [oldArgument, newArgument, ...executables] = process.argv.slice(2);
+const hostUpgrade = process.argv.includes('--host-upgrade');
+const [oldArgument, newArgument, ...executables] = process.argv.slice(2).filter(value => value !== '--host-upgrade');
 if (!oldArgument || !newArgument || !executables.length) throw new Error('Provide old/new tested tarballs and official runtime executables.');
+if (hostUpgrade && executables.length !== 2) throw new Error('--host-upgrade requires old and new official host executables.');
 const tarballs = [oldArgument, newArgument].map(path => resolve(path));
 const receipts = tarballs.map(path => {
   const receipt = JSON.parse(readFileSync(join(dirname(path), 'package-receipt.json'), 'utf8'));
@@ -94,8 +96,9 @@ async function start(runtime, folder, profile) {
   throw new Error('Isolated runtime readiness timed out.');
 }
 try {
-  for (const executable of executables) {
+  for (const executable of hostUpgrade ? executables.slice(0, 1) : executables) {
     const runtime = candidateRuntime(executable);
+    const nextRuntime = hostUpgrade ? candidateRuntime(executables[1]) : runtime;
     const folder = inside(join(root, runtime.app.version));
     const profile = inside(join(folder, 'dsh-home/profiles/candidate'));
     mkdirSync(join(profile, 'node_modules'), { recursive: true });
@@ -108,10 +111,14 @@ try {
     const initial = preferences.snapshot();
     preferences.save(initial.revision, { ...initial.value, grokEnabled: false, githubEnabled: false });
     const preferenceHash = sha256(preferencePath);
-    const originalFiles = [sha256(runtime.executable), sha256(runtime.archivePath)];
+    const originalFiles = [runtime, nextRuntime].flatMap(row => [sha256(row.executable), sha256(row.archivePath)]);
     const stages = [];
     let revision = 0;
-    for (const [index, packageIndex] of [0, 1, 0].entries()) {
+    // Upgrade the plugin on the old supported host before upgrading DSH.
+    // Old 0.1.1 never claimed compatibility with the new host; do not bypass its gate.
+    const schedule = hostUpgrade ? [0, 1, 1, 1, 0] : [0, 1, 0];
+    for (const [index, packageIndex] of schedule.entries()) {
+      const stageRuntime = hostUpgrade && index === 2 ? nextRuntime : runtime;
       const receipt = receipts[packageIndex];
       const extraction = inside(join(folder, 'stage-' + index));
       mkdirSync(extraction);
@@ -128,7 +135,7 @@ try {
           dsh: { profile: { bundles: ['candidate-offline-fixture', 'dsh-grok-search'] } } };
       manifest.dependencies['dsh-grok-search'] = receipt.version;
       writeFileSync(manifestPath, JSON.stringify(manifest));
-      const { host, ready } = await start(runtime, folder, profile);
+      const { host, ready } = await start(stageRuntime, folder, profile);
       assert.equal(ready.runtimeWeb.searchProviderId, 'grok-search');
       assert.equal(ready.runtimeWeb.fetchProviderId, 'candidate-fetch');
       assert.equal(ready.existingDependencyPresent, true);
@@ -143,9 +150,10 @@ try {
       await host.close(); owned = null;
       assert.equal(sha256(configuration), configHash);
       assert.equal(sha256(preferencePath), preferenceHash);
-      stages.push({ pluginVersion: receipt.version, revision, searchPassed: true, configurationUnchanged: true, exitCode: 0 });
+      stages.push({ pluginVersion: receipt.version, hostVersion: stageRuntime.app.version,
+        revision, searchPassed: true, configurationUnchanged: true, exitCode: 0 });
     }
-    assert.deepEqual([sha256(runtime.executable), sha256(runtime.archivePath)], originalFiles);
+    assert.deepEqual([runtime, nextRuntime].flatMap(row => [sha256(row.executable), sha256(row.archivePath)]), originalFiles);
     results.push({ version: runtime.app.version, passed: true, stages });
   }
 } catch (error) { fatal = { message: redact(error.message) }; }
@@ -157,7 +165,8 @@ finally {
   const passed = !fatal && sourceUnchanged;
   writeJson(join(run.directory, 'summary.json'), { runId: run.runId, passed, fatal, sourceUnchanged, sourceHashes,
     packages: receipts.map(row => ({ version: row.version, sha256: row.sha256 })), results,
-    scope: 'official-runtime-restart-upgrade-and-rollback-in-one-isolated-profile',
+    scope: hostUpgrade ? 'official-runtime-host-and-plugin-upgrade-and-rollback-in-one-isolated-profile'
+      : 'official-runtime-restart-upgrade-and-rollback-in-one-isolated-profile',
     pluginManagerUpgradeTested: false, desktopRendererVerified: false, realPaidProviders: false, published: false });
   console.log(JSON.stringify({ runId: run.runId, passed, fatal, versions: results.map(row => row.version) }));
   process.exitCode = passed ? 0 : 1;

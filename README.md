@@ -6,7 +6,7 @@
 
 可视化配置 · 自动回退 · 日志回放 · 账户额度
 
-[![Version](https://img.shields.io/badge/Version-0.2.0-5264FF?style=flat-square)](https://github.com/Lain-in-coding/dsh-grok-search/releases) [![DSH](https://img.shields.io/badge/DSH-0.2.1%20rc.2%20%E2%80%93%20rc.5-24292f?style=flat-square)](#支持范围) [![MIT](https://img.shields.io/badge/License-MIT-24292f?style=flat-square)](./LICENSE) [![Stars](https://img.shields.io/github/stars/Lain-in-coding/dsh-grok-search?style=flat-square)](https://github.com/Lain-in-coding/dsh-grok-search/stargazers)
+[![Version](https://img.shields.io/badge/Version-0.2.0-5264FF?style=flat-square)](https://github.com/Lain-in-coding/dsh-grok-search/releases) [![DSH](https://img.shields.io/badge/DSH-0.2.1%20rc.2%E2%80%93rc.5%20%7C%200.2.2%20rc.1-24292f?style=flat-square)](#支持范围) [![MIT](https://img.shields.io/badge/License-MIT-24292f?style=flat-square)](./LICENSE) [![Stars](https://img.shields.io/github/stars/Lain-in-coding/dsh-grok-search?style=flat-square)](https://github.com/Lain-in-coding/dsh-grok-search/stargazers)
 
 [快速开始](#快速开始) · [更新已有版本](#更新已有版本) · [支持范围](#支持范围) · [来源与排序](#来源与排序)
 
@@ -65,7 +65,7 @@ DeepSeek Harness 与「Grok Search Rs」横向相连，搜索来源在右侧纵�
 
 ## 准备工作
 
-- **DSH**：`0.2.1-rc.2` ～ `0.2.1-rc.5`，系统与入口见[支持范围](#支持范围)。
+- **DSH**：`0.2.1-rc.2` ～ `0.2.1-rc.5` 或 `0.2.2-rc.1`，系统与入口见[支持范围](#支持范围)。
 - **至少一个搜索 Key**：Grok 或任一补充来源的 API Key；无需全部配置。
 - **网络连接**：首次安装要下载依赖；没有兼容的 `grok-search-rs` 时，插件会自动准备程序。
 
@@ -165,7 +165,11 @@ dsh plugin --profile web add dsh-grok-search
 
 **正常更新不用重填 Key、不用清缓存，也不用重新安装兼容的 `grok-search-rs`。** 配置和程序缓存与插件包分开保存；请继续使用原来的 DSH 配置环境，不要清空应用数据。
 
-推荐直接导入新版 `.tgz`，**不必先卸载旧插件**：
+**准备升级到 DSH `0.2.2-rc.1`？先把插件更新到 `0.2.0`，再更新 DSH。** 若已经更新 DSH，直接安装新版插件即可；旧插件 `0.1.1` 不支持该宿主，不要通过忽略版本检查强行启用。
+
+DSH `0.2.2-rc.1` 已提供第三方插件更新入口：从 npm 按包名安装的插件，可在插件管理页检查更新并选择新版本。镜像未同步时可改用下面的 Release 安装包；无需修改全局 npm 源。
+
+各受支持版本通用的方式是直接导入新版 `.tgz`，**不必先卸载旧插件**：
 
 1. 在 [Releases](https://github.com/Lain-in-coding/dsh-grok-search/releases) 确认目标版本已发布且支持你的 DSH，先下载对应 `.tgz`，等待正在进行的搜索结束。
 2. 在 **「插件 → 添加插件 → 包名或地址」** 填写新 `.tgz` 的绝对路径，点击 **「安装」**。
@@ -173,18 +177,19 @@ dsh plugin --profile web add dsh-grok-search
 
 按包名或解压目录安装时，DSH 可能提示“已经安装”；此时先在插件详情中卸载，再安装新版即可，配置和程序缓存仍保留。若升级失败，可用原版本 `.tgz` 恢复，不要通过删除配置或缓存排障。
 
-上述原地更新已验证 Windows Desktop `0.2.1-rc.2/.3/.5` 的 `0.1.1 → 0.2.0`；其他入口尚未逐项验证。新版插件包需要下载，已有兼容的搜索程序继续复用。
+Windows Desktop `0.2.1-rc.2/.3/.5` 已验证 `0.1.1 → 0.2.0` 配置保留；另验证了“rc.5 更新插件 → 更新宿主到 0.2.2-rc.1 → 回退”的隔离流程。其他入口的升级路径尚未逐项验证。新版插件包需要下载，已有兼容的搜索程序继续复用。
 
 ## 支持范围
 
 | 系统 | 入口 | 兼容的 DSH 版本 | 验证情况 |
 | --- | --- | --- | --- |
-| Windows x64 | Desktop | `0.2.1-rc.2` ～ `0.2.1-rc.5` | rc.2 / rc.3 / rc.5 已测；rc.4 源码审查支持 |
-| macOS Apple Silicon | Desktop | `0.2.1-rc.2` ～ `0.2.1-rc.5` | rc.2 / rc.3 / rc.5 已测；rc.4 源码审查支持 |
-| Linux x64（WSL Ubuntu 22.04） | CLI/Web | `0.2.1-rc.2` ～ `0.2.1-rc.5` | 四个版本均已测 |
+| Windows x64 | Desktop | `0.2.1-rc.2` ～ `rc.5`、`0.2.2-rc.1` | rc.2 / rc.3 / rc.5 与 0.2.2-rc.1 已测；rc.4 源码审查支持 |
+| macOS Apple Silicon | Desktop | `0.2.1-rc.2` ～ `rc.5`、`0.2.2-rc.1` | rc.2 / rc.3 / rc.5 与 0.2.2-rc.1 已测；rc.4 源码审查支持 |
+| Linux x64（WSL Ubuntu 22.04） | CLI/Web | `0.2.1-rc.2` ～ `rc.5`、`0.2.2-rc.1` | 五个版本均已测 |
 
 - **共用一个安装包**。rc.4 Desktop 的关键宿主源码与已测 rc.3 / rc.5 一致，未单独实测官方 rc.4 桌面发行包。
 - **区分入口**：Windows/macOS 的独立 CLI/Web 不在本次支持范围；Linux 使用 WSL 验证，macOS 使用自动化测试环境。
+- **运行时要求**：DSH `0.2.2-rc.1` 需要 Node.js ≥ `24.9`；Desktop 自带运行时，CLI/Web 用户须自行满足此要求。插件没有自动升级全局 Node.js。
 - **复用已有后端**：已验证 `grok-search-rs` 程序版本为 `0.1.26`；优先复用兼容安装，缺少时准备私有缓存，不升级全局程序或自动采用未经验证的版本。
 - **升级 DSH 前核对[支持矩阵](./support-matrix.json)**。超出范围时宿主可能跳过插件、按原设置搜索；表外平台与版本不作兼容承诺。
 
@@ -389,14 +394,16 @@ profile 通常位于 `<DSH 主目录>/profiles/<profile 名>`；Desktop 使用 `
 
 第三方接口返回 HTTP 200 或普通回答，不一定具备可用的联网搜索来源。欢迎反馈实际使用问题，不承诺表外兼容或零故障。
 
+DSH `0.2.2-rc.1` 在宿主配置重建恰好与搜索派发重叠时，可能拒绝旧工具调用并返回 `UNKNOWN_TOOL`；重建完成后的下一次搜索正常，不会因此偷偷改用官方搜索。插件自己的 Key 保存不要求重启宿主。
+
 </details>
 
 ## 开发与反馈
 
-开发需要 **Node.js ≥ 22**。按锁文件安装依赖，再构建、测试和打包：
+开发建议 **Node.js ≥ 24.9**，与最新支持宿主一致。按锁文件安装依赖，再构建、测试和打包：
 
 ```shell
-npm ci
+npm ci --ignore-scripts --legacy-peer-deps
 npm run build:client
 npm run test:all
 npm run pack:release

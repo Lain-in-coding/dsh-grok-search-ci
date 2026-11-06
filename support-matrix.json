@@ -115,15 +115,15 @@
       "platform": "darwin-arm64",
       "host": "Desktop",
       "dsh": "0.2.2-rc.1",
-      "verificationLevel": "source-reviewed",
-      "verification": "候选适配：已审查官方 0.2.2-rc.1 的共用配置、工具、客户端与插件管理接口；尚未完成本轮 macOS 原始 Desktop 实测，必须通过后才正式发布"
+      "verificationLevel": "host-tested",
+      "verification": "GitHub macOS Apple Silicon 自动化通过：官方 Desktop 原始程序/ASAR 的隔离安装、配置/日志/回放/额度、原生/PTC多会话、热启停、两种官方搜索选择、首次下载与诊断；合成上游，不是付费接口验收"
     },
     {
       "platform": "linux-x64",
       "host": "CLI/Web",
       "dsh": "0.2.2-rc.1",
-      "verificationLevel": "source-reviewed",
-      "verification": "候选适配：已审查官方共用接口，隔离 Node 24.14.1 下正在补验 CLI/Web 完整门禁；尚未完成本轮实测，必须通过后才正式发布"
+      "verificationLevel": "host-tested",
+      "verification": "WSL Ubuntu 22.04、隔离 Node 24.14.1：完整182项和首次使用199项通过，包括安装、共享配置、安全RPC、日志/额度/回放、原生启停、配置重载后工具恢复、自动下载与缓存复用；合成上游"
     }
   ],
   "realKeyVerification": {

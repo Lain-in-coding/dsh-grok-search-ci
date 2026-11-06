@@ -53,6 +53,7 @@ test('rc.4 Desktop 属于源码审查支持，不得冒充官方 Desktop 原包�
   ]);
   for (const row of inferred) assert.equal(row.verificationLevel, 'source-reviewed');
   assert.equal(matrix.targets.filter(row => row.verificationLevel === 'host-tested' && row.dsh !== '0.2.2-rc.1').length, 10);
+  assert.equal(matrix.targets.filter(row => row.verificationLevel === 'host-tested' && row.dsh === '0.2.2-rc.1').length, 3);
   for (const row of inferred) {
     assert.match(row.verification, /源码/);
     assert.match(row.verification, /未.*实测/);
