@@ -10,7 +10,7 @@
 
 [界面一览](#界面一览) · [快速开始](#快速开始) · [更新已有版本](#更新已有版本) · [来源与排序](#来源与排序) · [测试搜索](#测试搜索) · [共享配置](#共享配置) · [常见问题](#常见问题)
 
-<img src="https://raw.githubusercontent.com/Lain-in-coding/dsh-grok-search/main/docs/images/readme-route-light.png" alt="搜索路由界面：DeepSeek Harness 与 Grok Search RS 横向连接，Grok、Tavily、Exa、Firecrawl、TinyFish 和 GitHub 纵向排列" width="960">
+<img src="https://raw.githubusercontent.com/Lain-in-coding/dsh-grok-search/main/docs/images/readme-route-light.png" alt="搜索路由界面：DeepSeek Harness 与 Grok Search Rs 横向连接，Grok、Tavily、Exa、Firecrawl、TinyFish 和 GitHub 纵向排列" width="960">
 
 </div>
 
@@ -25,7 +25,7 @@
 
 ## 界面一览
 
-插件在 DSH 的插件详情页提供一张「搜索路由」卡片：DeepSeek Harness 与 `grok-search-rs` 程序节点横向相连，搜索来源纵向排列。界面中的 **「Grok Search RS」** 是程序节点，右侧 **「Grok」** 是主搜索服务；点击任一来源或中间节点即可配置。
+插件在 DSH 的插件详情页提供一张「搜索路由」卡片：DeepSeek Harness 与 `grok-search-rs` 程序节点横向相连，搜索来源纵向排列。界面中的 **「Grok Search Rs」** 是程序节点，右侧 **「Grok」** 是主搜索服务；点击任一来源或中间节点即可配置。
 
 <table>
   <tr>
@@ -160,7 +160,7 @@ dsh plugin --profile web add dsh-grok-search
 | Exa、Firecrawl | 补充搜索 | Base URL、API Key |
 | TinyFish | 补充搜索 | 搜索与抓取 Base URL、API Key |
 | GitHub | 专用链接解析与认证检测 | Token；不参与补充搜索排序 |
-| Grok Search RS 中间节点 | `grok-search-rs` 程序与通用设置 | 补充来源数、回退来源数、超时、缓存、回复字符上限 |
+| Grok Search Rs 中间节点 | `grok-search-rs` 程序与通用设置 | 补充来源数、回退来源数、超时、缓存、回复字符上限 |
 
 拖动补充来源可以调整顺序，也支持聚焦后按 `Alt+↑/↓`。普通回退搜索在第一个返回有效结果的来源停止，**「补充来源数」「回退来源数」指结果条数，不是启用的供应商数量**。
 
@@ -251,7 +251,7 @@ DSH 的插件开关与详情中的组件开关是两层独立设置。若插件�
 | `CONFIG_CONFLICT` | 读取最新配置，核对草稿后再保存 |
 | `CONFIG_COMMIT_UNCERTAIN` | 先回读确认文件状态，不要反复点击覆盖 |
 | `CONFIG_BUSY` / `PREFERENCES_BUSY` | 检查并发保存或上次中断；插件不会强抢遗留锁 |
-| 程序准备 / 下载错误 | 检查网络或 `grok-search-rs` 程序缓存，在「Grok Search RS」中间节点查看原因并重新检测；不会覆盖全局程序 |
+| 程序准备 / 下载错误 | 检查网络或 `grok-search-rs` 程序缓存，在「Grok Search Rs」中间节点查看原因并重新检测；不会覆盖全局程序 |
 | `GROK_VERSION_UNVERIFIED` /「Grok 版本未经验证」 | 指 `grok-search-rs` 程序版本，不是 Grok 模型版本；未经插件验证不会自动安装、升级或覆盖，请等待插件更新 |
 
 DSH 升级到支持范围之外时，宿主可能跳过插件，按原设置搜索。请核对版本，不要强制放行未验证组合。

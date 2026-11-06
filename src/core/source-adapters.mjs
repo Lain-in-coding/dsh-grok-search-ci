@@ -353,7 +353,7 @@ export function createSourceRouter({ getConfig, getPreferences, fetchImpl = glob
       // so nothing is sent; only a missing or invalid value means the default 5.
       if (config.fallback_sources === 0) {
         throw new GrokSearchError('FALLBACK_SOURCES_ZERO',
-          '回退来源数（fallback_sources）为 0，未调用补充来源；如需回退，请在 Grok Search RS 设置中调大该值。');
+          '回退来源数（fallback_sources）为 0，未调用补充来源；如需回退，请在 Grok Search Rs 设置中调大该值。');
       }
       const available = sources.filter(source => source.state === 'available');
       if (!available.length) {

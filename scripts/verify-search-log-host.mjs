@@ -163,8 +163,13 @@ try {
     assert.equal(answer.ok, true, sanitize(JSON.stringify(answer)));
     const rows = (await rpc('readSearchLog', { sessionId })).records;
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].kind, 'sources');
-    assert.equal(rows[0].served, 'tavily');
+    // Codes and provider ids only (no query, URL, key or upstream text), so a
+    // live mismatch reports which source failed before another one answered.
+    const route = sanitize(JSON.stringify({ kind: rows[0].kind, served: rows[0].served, reason: rows[0].reason,
+      calls: rows[0].calls.map(call => ({ provider: call.provider, operation: call.operation,
+        result: call.result, code: call.code, keyIndex: call.keyIndex })) }));
+    assert.equal(rows[0].kind, 'sources', 'Route: ' + route);
+    assert.equal(rows[0].served, 'tavily', 'Route: ' + route);
     if (!live) assert.equal(rows[0].calls[0].charge.amount, 1);
     else assert.equal(rows[0].calls[0].charge.basis, 'reported');
     assert.equal(rows[0].official, null);
