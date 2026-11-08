@@ -22,7 +22,7 @@ const run = (command, args, env = process.env) => new Promise((resolveRun, rejec
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.on('data', chunk => { stderr += chunk; });
-  const timer = setTimeout(() => { child.kill(); reject(new Error('Platform observation timed out.')); }, 30_000);
+  const timer = setTimeout(() => { child.kill(); reject(new Error('Platform observation timed out: ' + command)); }, 30_000);
   child.once('error', error => { clearTimeout(timer); reject(error); });
   child.once('close', (code, signal) => { clearTimeout(timer); resolveRun({ code, signal, stdout, stderr }); });
 });
@@ -49,11 +49,16 @@ try {
     opener = createConfigLocationOpener();
     result.openFile = await opener.open({ path, kind: 'file' });
     assert.equal(result.openFile.opened, true);
+    const processes = await run('/usr/bin/pgrep', ['-fl', 'TextEdit']);
+    result.editorProcesses = processes.stdout.trim();
+    const screen = await run('/usr/sbin/screencapture', ['-x', join(directory, 'synthetic-editor.png')]);
+    result.screenCaptureCode = screen.code;
     // The clean macOS runner's default text editor is TextEdit. Observe only the
     // unique synthetic document, then save it to prove it is the original file.
     const appleScript = `
 on run argv
   set expectedName to item 1 of argv
+  with timeout of 12 seconds
   tell application "TextEdit"
     repeat 50 times
       repeat with doc in documents
@@ -68,9 +73,11 @@ on run argv
       delay 0.2
     end repeat
   end tell
+  end timeout
   error "Synthetic document did not appear in the default editor."
 end run`;
     const edited = await run('/usr/bin/osascript', ['-e', appleScript, path.split('/').at(-1)]);
+    result.editorAutomation = { code: edited.code, stdout: edited.stdout.trim(), stderr: edited.stderr.trim() };
     assert.equal(edited.code, 0, edited.stderr);
     assert.equal(edited.stdout.trim(), 'ROUNDTRIP_OK');
     assert.equal(readFileSync(path, 'utf8').replaceAll('\r\n', '\n'), content.replace('73', '74'));
