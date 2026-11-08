@@ -131,13 +131,79 @@ test('stop aborts in-flight sources and rejects queued requests before barrier d
   assert.equal(routed.routeSnapshot(), null);
 });
 
-test('a single total budget ends Grok without giving sources another full timeout', async () => {
+test('a single total budget ends Grok when no fallback is available', async () => {
   const { routed, calls } = harness({ budgetMs: 80, cleanupMs: 20,
     grok: (request, signal) => new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })),
-    sources: { search: async () => sourceResult('exa') } });
+    sources: { available: false, search: async () => sourceResult('exa') } });
   await assert.rejects(routed.search({ query: 'q' }), { code: 'GROK_TIMEOUT' });
   assert.equal(calls.sources.length, 0);
   await routed.dispose();
+});
+
+test('a slow primary leaves time for a configured fallback within the original deadline', async () => {
+  const { routed, calls } = harness({ budgetMs: 240, cleanupMs: 20,
+    grok: (request, signal) => new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })),
+    sources: { search: async ({ signal, remainingMs }) => {
+      assert.equal(signal.aborted, false);
+      assert.ok(remainingMs() > 0 && remainingMs() < 100);
+      return sourceResult('exa');
+    } } });
+  try {
+    const answer = await routed.search({ query: 'q' });
+    assert.equal(answer.search_provider, 'exa');
+    assert.equal(calls.sources.length, 1);
+    assert.equal(routed.routeSnapshot().grokCode, 'GROK_STAGE_TIMEOUT');
+  } finally { await routed.dispose(); }
+});
+
+test('one dispatched request retains its original source configuration after a concurrent save', async () => {
+  let config = { tavily_api_key: 'old', timeout_seconds: 60 };
+  const { routed } = harness({ getConfig: () => config,
+    grok: async () => { config = { tavily_api_key: 'new', timeout_seconds: 5 }; throw new Error('unavailable'); },
+    sources: { search: async ({ configuration }) => {
+      assert.equal(configuration.tavily_api_key, 'old');
+      return sourceResult('tavily');
+    } } });
+  try { await routed.search({ query: 'q' }); } finally { await routed.dispose(); }
+});
+
+test('an old in-flight result stays in history but cannot validate a replacement credential', async () => {
+  let config = { tavily_api_key: 'old-key', response_max_chars: 5000 };
+  let finish;
+  const { routed } = harness({
+    prefs: { grokEnabled: false }, getConfig: () => config,
+    sources: { search: () => new Promise(resolve => { finish = resolve; }) },
+  });
+  try {
+    const pending = routed.search({ query: 'configuration attribution' });
+    await new Promise(resolve => setImmediate(resolve));
+    config = { ...config, tavily_api_key: 'new-key' };
+    finish(sourceResult('tavily'));
+    assert.equal((await pending).sources.length, 1, 'the valid in-flight response still completes');
+    assert.equal(routed.routeSnapshot(), null, 'current health must not inherit the old credential result');
+    const records = routed.searchLog.snapshot(randomUUID()).records;
+    assert.equal(records.length, 1);
+    assert.equal(records[0].served, 'tavily');
+    assert.equal(records[0].kind, 'sources');
+  } finally { await routed.dispose(); }
+});
+
+test('route health expires on effective configuration changes and unreadable configuration', async () => {
+  let config = { grok_api_key: 'first-key' }, broken = false;
+  const { routed } = harness({
+    getConfig: () => { if (broken) throw new GrokSearchError('CONFIG_PARSE_FAILED', 'invalid TOML'); return config; },
+    grok: async () => ({ content: 'ok', sources: [] }),
+  });
+  try {
+    await routed.search({ query: 'first' });
+    assert.equal(routed.routeSnapshot().served, 'grok');
+    config = { grok_api_key: 'other-key' };
+    assert.equal(routed.routeSnapshot(), null);
+    await routed.search({ query: 'second' });
+    assert.equal(routed.routeSnapshot().served, 'grok');
+    broken = true;
+    assert.equal(routed.routeSnapshot(), null);
+  } finally { await routed.dispose(); }
 });
 
 test('output budget captured at dispatch rejects bad config instead of silent fallback', async () => {

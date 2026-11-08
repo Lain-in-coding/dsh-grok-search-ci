@@ -1163,8 +1163,13 @@ async function productionDiagnosticsFlow(host, stub) {
       ['exa', 'tavily', 'tinyfish', 'firecrawl'].every(id => calls.some(row => row.provider === id)));
     check('both-Tavily-keys-tested', ['valid', 'invalid'].every(slot =>
       calls.some(row => row.provider === 'tavily' && row.keySlot === slot)));
-    check('Grok-failed-backup-shown-without-search-failure', partial.state === 'fallback'
-      && partial.status === '已静默回退' && partial.announcer.includes('已静默回退'));
+    check('Grok-failed-diagnosis-reports-backup-availability-without-inventing-chat-fallback', partial.state === 'backup'
+      && partial.status === '补充来源可用' && partial.announcer.includes('Grok 未通过')
+      && !partial.announcer.includes('已静默回退'));
+    check('Grok-invalid-key-retains-real-401-status', partial.rows.some(row =>
+      row.id === 'grok' && row.fault?.includes('401') && row.fault?.includes('鉴权失败')));
+    check('unconfigured-GitHub-is-not-a-diagnostic-target',
+      !partial.keys.some(row => row.id === 'github'));
     check('Tavily-partial-key-status-is-accurate', partial.keys.some(row =>
       row.id === 'tavily' && row.dots.includes('ok') && row.dots.includes('err')));
     check('TinyFish-error-has-real-403-short-code', partial.rows.some(row =>
@@ -1220,13 +1225,21 @@ async function productionDiagnosticsFlow(host, stub) {
       check('output-budget-failover-does-not-call-official',
         (await host.probe('snapshot')).calls.original === originalBefore);
     } finally { writeFileSync(budgetPath, originalBudgetText); }
+    // The previous assertion changed the file outside the UI. Import the
+    // restored revision before starting the next test; otherwise its deliberate
+    // CAS guard correctly cancels a stale-form diagnosis.
+    await renderer.evaluate(`document.querySelector('button[aria-label="返回插件"]').click(); true`);
+    await waitForRenderer(renderer, current => current.evaluate(`!document.querySelector('[data-dsg-route]')`));
+    await waitForRenderer(renderer, current => current.evaluate(`!!document.querySelector('button[aria-label="查看 dsh-grok-search"]')`));
+    await renderer.evaluate(`document.querySelector('button[aria-label="查看 dsh-grok-search"]').click(); true`);
+    await waitForRenderer(renderer, current => current.evaluate(`${q('#routeCard')}?.dataset.s==='backup'`));
     stub.state.mode = 'failed';
     const allFailedStart = stub.requests.length;
     await runTest();
     await completed();
     const failed = await snapshotUi();
     check('all-failed-diagnosis-is-clear', failed.state === 'err'
-      && failed.status === '搜索失败' && failed.announcer.includes('全部不可用'));
+      && failed.status === '最近检查未通过' && failed.announcer.includes('测试未通过'));
     check('disabled-Grok-is-not-tested', !stub.requests.slice(allFailedStart)
       .some(row => row.provider === 'grok'));
     check('failed-diagnosis-keeps-all-source-status-codes',

@@ -70,13 +70,14 @@ export function unpackPlatformArchive(archive, { packageName, version, platform 
 }
 
 async function readResponse(response, limit, signal) {
-  if (!response.ok) fail('GROK_DOWNLOAD_HTTP', `程序下载服务返回 HTTP ${response.status}。`);
-  if (Number(response.headers.get('content-length')) > limit) fail('GROK_DOWNLOAD_SIZE', '下载文件超过限制。');
-  const reader = response.body?.getReader();
-  if (!reader) fail('GROK_DOWNLOAD_EMPTY', '下载服务未返回文件内容。');
+  let reader;
   const chunks = [];
   let size = 0;
   try {
+    if (!response.ok) fail('GROK_DOWNLOAD_HTTP', `程序下载服务返回 HTTP ${response.status}。`);
+    if (Number(response.headers.get('content-length')) > limit) fail('GROK_DOWNLOAD_SIZE', '下载文件超过限制。');
+    reader = response.body?.getReader();
+    if (!reader) fail('GROK_DOWNLOAD_EMPTY', '下载服务未返回文件内容。');
     for (;;) {
       signal?.throwIfAborted();
       const { value, done } = await reader.read();
@@ -85,7 +86,12 @@ async function readResponse(response, limit, signal) {
       if (size > limit) fail('GROK_DOWNLOAD_SIZE', '下载文件超过限制。');
       chunks.push(value);
     }
-  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  } finally {
+    if (reader) { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+    // A rejected status/header still owns an unread body. Release it before
+    // retrying the mirror instead of waiting for nondeterministic GC.
+    else await response.body?.cancel?.().catch(() => {});
+  }
   return Buffer.concat(chunks);
 }
 

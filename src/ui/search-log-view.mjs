@@ -13,6 +13,7 @@ let disposed = false, readTask = null, generation = 0, clearing = false, pollTim
 let readSignature = null;
 // The first readable snapshot of a mount is a baseline, not new activity.
 let logBaselined = false, logRestricted = false;
+let logReadError = null;
 
 
 
@@ -354,7 +355,7 @@ function syncLogControls({ snap = false } = {}) {
   privacy.title = logPrivate ? '显示搜索内容' : '隐藏搜索内容';
   const icon = svg(logPrivate ? 'eyeOff' : 'eye');
   if (privacy.innerHTML !== icon) privacy.innerHTML = icon;
-  $('#logCount').textContent = String(logEntries().length);
+  $('#logCount').textContent = logReadError && !logRows.length ? '—' : String(logEntries().length);
   $('#logClear').disabled = !logRows.length;
   syncLogRuntime();
 }
@@ -448,7 +449,9 @@ function renderLog(opt = {}) {
     if (!visibleIds.has(node.dataset.id)) node.remove();
   }
   if (!rows.length) {
-    const blank = logRows.length
+    const blank = logReadError
+      ? ['搜索记录暂不可读', '读取失败不代表未调用插件；恢复连接后自动刷新']
+      : logRows.length
       ? ['没有符合条件的记录', '切换筛选查看其他记录']
       : ['还没有搜索记录', S.plugin ? '下一次搜索完成后，可在这里查看通道' : '官方路由已恢复，当前没有搜索记录'];
     const empty = document.createElement('div');
@@ -1024,10 +1027,12 @@ async function read() {
     try {
       const result = await remote.readSearchLog({ sessionId });
       if (disposed || mine !== generation || !S.capabilities?.secretsAllowed) return;
+      const wasUnreadable = logReadError !== null;
+      logReadError = null;
       const records = (result.records || []).slice(0, LOG_CAP);
       const signature = JSON.stringify([records, S.plugin]);
       $('#logNote').textContent = '仅内存 · 最近 20 条 · 停用或退出 DSH 后清空';
-      if (readSignature === signature) return;
+      if (readSignature === signature) { if (wasUnreadable) renderLog(); return; }
       const before = new Map(logRows.map(row => [row.id, row.kind]));
       logRows = records.map(input => {
         const row = normalizeLog({ ...input, t: new Date(input.at).toLocaleTimeString('zh-CN', { hour12: false }) });
@@ -1043,9 +1048,15 @@ async function read() {
         const row = final || fresh;
         $('#logAnnouncer').textContent = `${logVisibleQuery(row)}，${LOG_CHIP[row.kind][1]}。`;
       }
-    } catch {
+    } catch (error) {
       if (disposed || mine !== generation || !S.capabilities?.secretsAllowed) return;
-      $('#logNote').textContent = '日志暂不可读，请通过安全连接重新打开设置页';
+      const code = /^[\w./-]{1,80}$/.test(error?.code || '') ? error.code : 'SETTINGS_UNAVAILABLE';
+      const reason = code === 'SETTINGS_SECURE_CONNECTION_REQUIRED' ? '请通过本机直连或 HTTPS 查看'
+        : code === 'SETTINGS_AUTH_REQUIRED' ? '宿主身份验证失效，请重新连接'
+          : code === 'SEARCH_LOG_SESSION_INVALID' ? '日志会话失效，请重新打开插件页'
+            : '读取失败，正在重试；这不代表没有搜索记录';
+      $('#logNote').textContent = `日志暂不可读 · ${code} · ${reason}`;
+      if (logReadError !== code) { logReadError = code; renderLog(); }
     }
   })().finally(() => { readTask = null; });
   return readTask;

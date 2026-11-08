@@ -1,7 +1,8 @@
 {
   "schemaVersion": 1,
-  "packageVersion": "0.2.0",
-  "channel": "正式版本：npm latest（next 同版本入口）与 GitHub Release 使用同一个安装包",
+  "packageVersion": "0.2.1",
+  "channel": "待审核候选；正式发布时 npm latest 与 GitHub Release 使用同一个安装包。next 可能指向旧版",
+  "verificationBaseline": "targets 中的宿主矩阵记录来自 0.2.0；0.2.1 的变更验收须结合本轮独立记录，不把旧包验证视为新包安装验证",
   "supportPolicy": "targets 列出本版本的兼容支持组合，verificationLevel 单独说明验证依据。支持声明不要求逐个官方 Desktop 发行包实测：rc.4 Desktop 经关键源码一致性审查并结合已有宿主证据纳入支持，但不宣称原包实测通过。后续版本仍须完成受影响验证并审核后发布。Linux 证据限 WSL Ubuntu 22.04，原生 Linux 完整安装路径属于验证有限；不承诺表外环境、真实付费接口或所有故障组合均通过。",
   "verificationLevels": {
     "host-tested": "有对应系统、架构、入口和版本的宿主自动化测试记录；具体场景见 verification。运行时未变时可按源码哈希复用原范围证据，不把旧包安装写成新包安装，也不表示真实付费接口通过。",
@@ -140,6 +141,8 @@
     "DSH 0.2.2-alpha.2（不在 engines.dsh 范围内，安装会被拒绝）"
   ],
   "notTested": [
+    "Windows 10 桌面配置文件打开：已有经典记事本分支回归，不等同 Windows 10 实机验证",
+    "原生 Linux 桌面的配置文件打开：无桌面 CLI/Web 行为单独验证",
     "DSH 0.2.1-rc.4 Desktop 官方原包实测：已纳入兼容支持，但仅有关键源码审查与关联宿主证据，不把该版本 CLI/Web 测试写成 Desktop 实测",
     "原生 Linux（非 WSL）上用 npm 全局安装 DSH CLI 的完整路径",
     "macOS 和 Linux 上的真实付费接口",

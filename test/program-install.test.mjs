@@ -124,6 +124,30 @@ test('untrusted redirect is rejected before fetching its target', async () => {
   await assert.rejects(installer.install(), error => error.code === 'GROK_DOWNLOAD_ORIGIN');
   assert.ok(urls.every(url => !url.includes('example.invalid')));
 });
+for (const [label, init, expectedCode] of [
+  ['HTTP failure', { status: 503 }, 'GROK_DOWNLOAD_HTTP'],
+  ['oversized Content-Length', { headers: { 'content-length': String(1_048_577) } }, 'GROK_DOWNLOAD_SIZE'],
+]) {
+  test(`rejected download ${label} cancels every unread response before trying the mirror`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'dsh-installer-response-'));
+    let requests = 0, cancellations = 0;
+    const cancelledBeforeRequest = [];
+    const installer = createPrivateProgramInstaller({
+      directory, platform: 'win32', arch: 'x64',
+      fetchImpl: async () => {
+        cancelledBeforeRequest.push(cancellations);
+        requests++;
+        return new Response(new ReadableStream({ cancel() { cancellations++; } }), init);
+      },
+    });
+    await assert.rejects(installer.install(), { code: expectedCode });
+    assert.equal(requests, 2);
+    assert.equal(cancellations, 2);
+    assert.deepEqual(cancelledBeforeRequest, [0, 1], 'close the previous body before trying the mirror');
+    assert.equal(existsSync(join(directory, '.install.lock')), false);
+    assert.equal(existsSync(join(directory, 'active.json')), false);
+  });
+}
 test('failed handshake never promotes the prepared binary', async () => {
   const { installer, directory } = fixture({ handshakeFailure: true });
   await assert.rejects(installer.install(), error => error.code === 'GROK_PROTOCOL_UNVERIFIED');

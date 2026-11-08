@@ -16,16 +16,19 @@ const mapping = {
   timeout_seconds: [60, 'integer'], cache_size: [256, 'integer'], response_max_chars: [45000, 'integer'],
 };
 const secrets = ['grok_api_key', 'openai_compatible_api_key', 'tavily_api_key', 'exa_api_key', 'tinyfish_api_key', 'firecrawl_api_key', 'github_token'];
-let content = {}, environment = {}, history = {}, currentRevision = 'missing', revisionNumber = 0, exists = false;
+let content = {}, environment = {}, history = {}, currentRevision = 'missing', revisionNumber = 0, environmentRevision = 0, exists = false;
 let prefs = { value: { schemaVersion: 1, grokEnabled: true, githubEnabled: true, sourceOrder: [...sourceNames],
   sourceEnabled: Object.fromEntries(sourceNames.map(id => [id, true])) }, revision: 'missing' };
 let control, program, capabilities, route = null, configError = null, delay = 0, nextSaveError = null, nextPreferenceError = null;
-let diagnostics = {}, calls = [], themeListener = null, theme = 'light', fiberErrors = [];
-let logRecords = [], quotaReplies = {}, quotaError = false, quotaDelay = 0, quotaIgnoreCancellation = false;
+let diagnostics = {}, calls = [], themeListener = null, theme = 'light', fiberErrors = [], revealDelay = 0, openError = null, openResult = null;
+let logRecords = [], logError = null, quotaReplies = {}, quotaError = false, quotaDelay = 0, quotaIgnoreCancellation = false;
 const cancelledOperations = new Set(), activeDiagnostics = new Map();
 let counters = { added: 0, removed: 0 };
 const failure = (code, message) => ({ ok: false, error: { code, message, details: {} } });
 const revision = () => (++revisionNumber).toString(16).padStart(64, '0');
+// The production identity also includes effective environment values. Keep
+// this synthetic identity opaque and separate from the file revision.
+const quotaRevision = () => environmentRevision ? `fixture-effective-${currentRevision}-${environmentRevision}` : currentRevision;
 function configSnapshot() {
   const fields = Object.fromEntries(Object.entries(mapping).map(([key, [fallback, type]]) => {
     const value = environment[key] ?? content[key] ?? fallback;
@@ -36,7 +39,7 @@ function configSnapshot() {
     return [key, { ...field, source, readOnly }];
   }));
   return { path: '/isolated/grok-search-rs/config.toml', displayPath: '~/.config/grok-search-rs/config.toml',
-    revision: currentRevision, quotaRevision: currentRevision, exists, fields, error: configError, unknownFields: [] };
+    revision: currentRevision, quotaRevision: quotaRevision(), exists, fields, error: configError, unknownFields: [] };
 }
 function snapshot() {
   return { control: clone(control), program: clone(program), config: configSnapshot(), capabilities: clone(capabilities),
@@ -50,7 +53,7 @@ const settings = new Proxy({}, { get: (_, method) => async request => {
     active?.();
     return { ok: true, value: { cancelled: Boolean(active) } };
   }
-  if (method === 'accountQuota') {
+  if (method === 'accountQuota' || method === 'previewAccountQuota') {
     const operationId = request.operationId, ignoreCancellation = quotaIgnoreCancellation;
     const reply = clone(quotaReplies[request.provider]);
     const value = Array.isArray(reply) ? reply[request.keyIndex ?? 0] : reply;
@@ -62,8 +65,10 @@ const settings = new Proxy({}, { get: (_, method) => async request => {
     activeDiagnostics.delete(operationId);
     if (!ignoreCancellation && cancelledOperations.has(operationId)) return failure('SETTINGS_DIAGNOSIS_CANCELLED', '查询已取消。');
     if (!capabilities.secretsAllowed) return failure('SETTINGS_SECURE_CONNECTION_REQUIRED', '连接不安全。');
-    if (request.expectedRevision !== currentRevision || request.quotaRevision !== currentRevision) return failure('CONFIG_CONFLICT', '配置已变更。');
-    return error ? failure('QUOTA_QUERY_FAILED', '查询失败。')
+    if (request.expectedRevision !== currentRevision || request.quotaRevision !== quotaRevision()) return failure('CONFIG_CONFLICT', '配置已变更。');
+    return error ? { ...failure('QUOTA_QUERY_FAILED', '额度接口查询失败。'),
+      error: { code: 'QUOTA_QUERY_FAILED', message: '额度接口查询失败。',
+        details: typeof error === 'object' ? error : {} } }
       : { ok: true, value: { value: value ?? null, supported: request.provider !== 'exa' } };
   }
   if (method === 'diagnoseProvider') {
@@ -78,7 +83,8 @@ const settings = new Proxy({}, { get: (_, method) => async request => {
   }
   else if (delay) await new Promise(done => setTimeout(done, delay));
   if (method === 'snapshot') return { ok: true, value: snapshot() };
-  if (method === 'readSearchLog') return { ok: true, value: { records: clone(logRecords) } };
+  if (method === 'readSearchLog') return logError ? failure(logError, 'Synthetic log read failure')
+    : { ok: true, value: { records: clone(logRecords) } };
   if (method === 'clearSearchLog') { logRecords = []; return { ok: true, value: { records: [] } }; }
   if (method === 'closeSearchLog') return { ok: true, value: { closed: true } };
   if (method === 'preferences') return { ok: true, value: clone(prefs) };
@@ -100,10 +106,15 @@ const settings = new Proxy({}, { get: (_, method) => async request => {
     content = clone(history[request.revision]); currentRevision = revision();
     return { ok: true, value: { config: configSnapshot() } };
   }
-  if (method === 'reveal') return capabilities.secretsAllowed ? { ok: true, value: {
-    key: request.key, value: environment[request.key] ?? content[request.key] ?? '',
-    readOnly: Object.hasOwn(environment, request.key),
-  } } : failure('SETTINGS_SECURE_CONNECTION_REQUIRED', '连接不安全。');
+  if (method === 'reveal') {
+    const response = capabilities.secretsAllowed ? { ok: true, value: {
+      key: request.key, value: environment[request.key] ?? content[request.key] ?? '',
+      readOnly: Object.hasOwn(environment, request.key),
+    } } : failure('SETTINGS_SECURE_CONNECTION_REQUIRED', '连接不安全。');
+    // Simulate delivery of an already-authorized reply after a transport change.
+    if (revealDelay) await new Promise(done => setTimeout(done, revealDelay));
+    return response;
+  }
   if (method === 'savePreferences') {
     if (nextPreferenceError && nextPreferenceError !== 'PREFERENCES_COMMIT_UNCERTAIN') {
       const error = nextPreferenceError; nextPreferenceError = null;
@@ -117,8 +128,10 @@ const settings = new Proxy({}, { get: (_, method) => async request => {
     }
     return { ok: true, value: clone(prefs) };
   }
-  if (method === 'openConfigLocation') return { ok: true, value: {
+  if (method === 'openConfigLocationWithStatus' && openError) return failure(openError.code, openError.message);
+  if (method === 'openConfigLocationWithStatus') return { ok: true, value: {
     path: configSnapshot().path, displayPath: configSnapshot().displayPath, exists, opened: false, kind: request.kind,
+    ...(openResult || {}),
   } };
   if (method === 'prepareProgram') { program.phase = 'ready'; return { ok: true, value: clone(program) }; }
   if (method === 'diagnoseProvider') {
@@ -213,9 +226,9 @@ function reset(state = 'returning') {
     exa_api_key: 'exa-synthetic', firecrawl_api_key: 'fc-synthetic', github_token: 'ghp_synthetic',
     source_providers: ['tavily', 'exa', 'firecrawl', 'tinyfish'], firecrawl_enabled: false,
   };
-  environment = {}; history = {}; revisionNumber = 1; currentRevision = state === 'fresh' ? 'missing' : revision();
+  environment = {}; environmentRevision = 0; history = {}; revisionNumber = 1; currentRevision = state === 'fresh' ? 'missing' : revision();
   exists = state !== 'fresh'; route = null; configError = null; diagnostics = {}; calls = []; delay = 0; nextSaveError = null; nextPreferenceError = null;
-  quotaDelay = 0; quotaIgnoreCancellation = false; quotaError = false; quotaReplies = {};
+  quotaDelay = 0; quotaIgnoreCancellation = false; quotaError = false; quotaReplies = {}; logError = null; revealDelay = 0; openError = null; openResult = null;
   prefs = { value: { schemaVersion: 1, grokEnabled: true, githubEnabled: true,
     sourceOrder: [...sourceNames], sourceEnabled: Object.fromEntries(sourceNames.map(id => [id, true])) }, revision: 'missing' };
   control = { available: true, phase: 'required', policy: 'required', routeVerified: true, completionCommitted: false };
@@ -239,9 +252,13 @@ window.harness = {
   unmount, mount,
   theme(value) { theme = value; document.body.dataset.theme = value; themeListener?.({ active: { colorScheme: value } }); },
   inject(updates) { Object.assign(content, updates); currentRevision = revision(); },
-  environment(updates) { environment = clone(updates); currentRevision = revision(); },
+  environment(updates) {
+    if (JSON.stringify(environment) !== JSON.stringify(updates)) environmentRevision++;
+    environment = clone(updates);
+  },
   configure(options) {
     if (options.logs) logRecords = clone(options.logs);
+    if (options.logError !== undefined) logError = options.logError;
     if (options.quotas) quotaReplies = clone(options.quotas);
     if (options.quotaError !== undefined) quotaError = options.quotaError;
     if (options.quotaDelay !== undefined) quotaDelay = options.quotaDelay;
@@ -252,6 +269,9 @@ window.harness = {
     if (options.configError) configError = options.configError;
     if (options.diagnostics) diagnostics = clone(options.diagnostics);
     if (options.delay !== undefined) delay = options.delay;
+    if (options.revealDelay !== undefined) revealDelay = options.revealDelay;
+    if (options.openError !== undefined) openError = options.openError;
+    if (options.openResult !== undefined) openResult = clone(options.openResult);
     if (options.nextSaveError) nextSaveError = options.nextSaveError;
     if (options.nextPreferenceError) nextPreferenceError = options.nextPreferenceError;
     if (options.route) route = clone(options.route);
