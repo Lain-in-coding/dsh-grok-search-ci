@@ -55,33 +55,39 @@ try {
     result.screenCaptureCode = screen.code;
     // The clean macOS runner's default text editor is TextEdit. Observe only the
     // unique synthetic document, then save it to prove it is the original file.
-    const appleScript = `
+    result.editorAutomation = [];
+    const editorStep = async (step, source) => {
+      const appleScript = `
 on run argv
   set expectedName to item 1 of argv
-  with timeout of 12 seconds
+  with timeout of 8 seconds
   tell application "TextEdit"
-    repeat 50 times
-      repeat with doc in documents
-        if (name of doc as text) is expectedName then
-          delay 2
-          set text of doc to "# Synthetic editor roundtrip." & linefeed & "timeout_seconds = 74" & linefeed
-          save doc
-          close doc saving no
-          return "ROUNDTRIP_OK"
-        end if
-      end repeat
-      delay 0.2
-    end repeat
+    ${source}
   end tell
   end timeout
-  error "Synthetic document did not appear in the default editor."
 end run`;
-    const edited = await run('/usr/bin/osascript', ['-e', appleScript, path.split('/').at(-1)]);
-    result.editorAutomation = { code: edited.code, stdout: edited.stdout.trim(), stderr: edited.stderr.trim() };
-    assert.equal(edited.code, 0, edited.stderr);
-    assert.equal(edited.stdout.trim(), 'ROUNDTRIP_OK');
+      const response = await run('/usr/bin/osascript', ['-e', appleScript, path.split('/').at(-1)]);
+      result.editorAutomation.push({ step, code: response.code,
+        stdout: response.stdout.trim(), stderr: response.stderr.trim() });
+      if (response.code !== 0) {
+        const capture = await run('/usr/sbin/screencapture', ['-x', join(directory, 'synthetic-editor-failure.png')]);
+        result.failureScreenCaptureCode = capture.code;
+      }
+      assert.equal(response.code, 0, `${step}: ${response.stderr}`);
+      return response.stdout.trim();
+    };
+    const names = await editorStep('locate', 'return name of every document');
+    assert.ok(names.includes(path.split('/').at(-1)), 'The default editor must contain the opened document');
+    const original = await editorStep('read', 'return text of document expectedName');
+    assert.equal(original, content.trim(), 'TextEdit must expose the original synthetic content');
+    await editorStep('edit', `set text of document expectedName to "# Synthetic editor roundtrip." & linefeed & "timeout_seconds = 74" & linefeed
+    return "EDIT_OK"`);
+    await editorStep('save', `save document expectedName
+    return "SAVE_OK"`);
     assert.equal(readFileSync(path, 'utf8').replaceAll('\r\n', '\n'), content.replace('73', '74'));
     result.originalFileRoundtripVerified = true;
+    await editorStep('close', `close document expectedName saving no
+    return "CLOSE_OK"`);
     result.openFolder = await opener.open({ path, kind: 'folder' });
     assert.equal(result.openFolder.opened, true);
     result.scope = 'real-macOS-default-TextEdit-and-Finder';
